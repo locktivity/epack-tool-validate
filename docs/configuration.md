@@ -232,19 +232,35 @@ tools:
 
 ### Environment-Specific Configuration
 
-```yaml
-# epack.yaml - using anchors for shared config
-profiles:
-  base: &base-profile
-    profile: profiles/security-baseline.yaml
+Use environment variables in overlay paths:
 
+```yaml
 tools:
   validate:
     source: locktivity/epack-tool-validate@v1
     config:
-      <<: *base-profile
+      profile: profiles/security-baseline.yaml
       overlays:
         - profiles/overlays/${ENVIRONMENT}.yaml
+```
+
+### Shared Configuration with YAML Anchors
+
+Use YAML anchors to share configuration between multiple tool instances:
+
+```yaml
+tools:
+  validate:
+    source: locktivity/epack-tool-validate@v1
+    config: &base-validate
+      profile: profiles/security-baseline.yaml
+
+  validate-strict:
+    source: locktivity/epack-tool-validate@v1
+    config:
+      <<: *base-validate
+      overlays:
+        - profiles/overlays/strict.yaml
 ```
 
 ## Output Files
