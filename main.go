@@ -27,6 +27,10 @@ func main() {
 
 func run(ctx componentsdk.ToolContext) error {
 	pack := ctx.Pack()
+	if pack == nil {
+		// Pack is required but not provided.
+		return fmt.Errorf("no pack provided")
+	}
 	manifest := pack.Manifest()
 
 	// Parse tool config
