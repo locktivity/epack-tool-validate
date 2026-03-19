@@ -1,6 +1,6 @@
-# Binary
-epack-tool-validate
-epack-tool-validate-*
+# Binary (only in root directory)
+/epack-tool-validate
+/epack-tool-validate-*
 
 # Lint tooling
 bin/
