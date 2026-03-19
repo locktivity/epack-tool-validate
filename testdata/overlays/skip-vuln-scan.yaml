@@ -1,0 +1,6 @@
+# Overlay that skips vulnerability scan requirements
+id: skip-vuln-scan
+name: Skip Vulnerability Scan Overlay
+
+skip:
+  - REQ-003

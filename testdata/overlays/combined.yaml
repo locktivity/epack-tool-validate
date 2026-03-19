@@ -1,0 +1,39 @@
+# Overlay demonstrating all overlay operations
+id: combined-overlay
+name: Combined Operations Overlay
+
+# Skip a requirement
+skip:
+  - REQ-004
+
+# Modify existing requirement
+modify:
+  - id: REQ-001
+    name: MFA Enabled (Modified)
+    control: CC6.1
+    category: Access Control
+    satisfied_by:
+      any_of:
+        - type: evidencepack/idp-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.mfa_enabled
+                op: eq
+                value: true
+              - path: $.mfa_enforced
+                op: eq
+                value: true
+
+# Add new requirement
+add:
+  - id: CUSTOM-001
+    name: Custom Requirement
+    category: Custom
+    satisfied_by:
+      any_of:
+        - type: evidencepack/custom@v1
+          metadata_conditions:
+            all:
+              - path: $.status
+                op: eq
+                value: active

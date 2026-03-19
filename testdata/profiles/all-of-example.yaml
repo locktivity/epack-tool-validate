@@ -1,0 +1,29 @@
+id: all-of-example
+name: All-Of Mode Example
+version: "1.0.0"
+description: Profile demonstrating all_of clause mode
+
+requirements:
+  - id: DEPLOY-001
+    name: Production Deployment Ready
+    category: Deployment
+    satisfied_by:
+      all_of:
+        - type: evidencepack/deploy-info@v1
+          metadata_conditions:
+            all:
+              - path: $.environment
+                op: eq
+                value: production
+        - type: evidencepack/test-results@v1
+          metadata_conditions:
+            all:
+              - path: $.all_passed
+                op: eq
+                value: true
+        - type: evidencepack/approval@v1
+          metadata_conditions:
+            all:
+              - path: $.approved
+                op: eq
+                value: true

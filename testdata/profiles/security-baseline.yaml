@@ -1,0 +1,72 @@
+id: security-baseline
+name: Security Baseline
+version: "1.0.0"
+description: Baseline security profile for testing MFA, vulnerabilities, and access policies
+
+requirements:
+  - id: REQ-001
+    name: MFA Enabled
+    category: Access Control
+    satisfied_by:
+      any_of:
+        - type: evidencepack/idp-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.mfa_enabled
+                op: eq
+                value: true
+
+  - id: REQ-002
+    name: MFA Coverage
+    category: Access Control
+    satisfied_by:
+      any_of:
+        # Full compliance - 100%
+        - type: evidencepack/idp-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.mfa_coverage
+                op: gte
+                value: 100
+        # Partial compliance - 90%+
+        - type: evidencepack/idp-posture@v1
+          severity: low
+          metadata_conditions:
+            all:
+              - path: $.mfa_coverage
+                op: gte
+                value: 90
+        # Below threshold
+        - type: evidencepack/idp-posture@v1
+          severity: high
+          metadata_conditions:
+            all:
+              - path: $.mfa_coverage
+                op: gte
+                value: 0
+
+  - id: REQ-003
+    name: Vulnerability Scan
+    category: System Operations
+    satisfied_by:
+      any_of:
+        - type: evidencepack/vuln-scan@v1
+          freshness:
+            max_age_days: 30
+          metadata_conditions:
+            all:
+              - path: $.critical_count
+                op: eq
+                value: 0
+
+  - id: REQ-004
+    name: Access Policy Documented
+    category: Access Control
+    satisfied_by:
+      any_of:
+        - type: evidencepack/idp-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.has_access_policy
+                op: eq
+                value: true

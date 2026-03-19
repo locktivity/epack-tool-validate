@@ -1,0 +1,16 @@
+# Binary
+epack-tool-validate
+epack-tool-validate-*
+
+# Lint tooling
+bin/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test artifacts
+*.test
+coverage.out

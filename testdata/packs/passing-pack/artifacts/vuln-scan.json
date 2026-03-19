@@ -1,0 +1,12 @@
+{
+  "scan_date": "2024-06-14T10:00:00Z",
+  "scanner": "example-scanner",
+  "scanner_version": "2.1.0",
+  "critical_count": 0,
+  "high_count": 2,
+  "medium_count": 15,
+  "low_count": 45,
+  "total_count": 62,
+  "targets_scanned": 25,
+  "scan_duration_seconds": 3600
+}

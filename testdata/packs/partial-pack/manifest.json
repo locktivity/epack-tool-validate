@@ -1,0 +1,17 @@
+{
+  "spec_version": "1",
+  "stream": "test",
+  "generated_at": "2024-06-14T12:00:00Z",
+  "pack_digest": "sha256:test789",
+  "sources": [],
+  "artifacts": [
+    {
+      "type": "evidence",
+      "path": "artifacts/idp-posture.json",
+      "digest": "sha256:partial123",
+      "content_type": "application/json",
+      "collected_at": "2024-06-14T12:00:00Z",
+      "schema": "evidencepack/idp-posture@v1"
+    }
+  ]
+}

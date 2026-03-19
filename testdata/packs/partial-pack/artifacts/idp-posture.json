@@ -1,0 +1,15 @@
+{
+  "mfa_enabled": true,
+  "mfa_enforced": true,
+  "mfa_coverage": 95,
+  "has_access_policy": true,
+  "password_policy": {
+    "min_length": 12,
+    "require_special": true,
+    "require_uppercase": true,
+    "require_number": true
+  },
+  "total_users": 100,
+  "active_users": 98,
+  "admin_count": 3
+}

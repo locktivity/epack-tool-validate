@@ -1,0 +1,18 @@
+id: test-profile
+name: Test Profile
+version: "1.0.0"
+description: A simple test profile for validation
+
+requirements:
+  - id: REQ-001
+    name: Test Requirement
+    control: TEST-1.1
+    category: Testing
+    satisfied_by:
+      any_of:
+        - type: evidencepack/test@v1
+          metadata_conditions:
+            all:
+              - path: $.enabled
+                op: eq
+                value: true

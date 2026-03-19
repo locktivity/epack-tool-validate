@@ -1,0 +1,29 @@
+# Overlay that adds production-specific requirements
+id: add-production
+name: Production Requirements Overlay
+
+add:
+  - id: PROD-001
+    name: Production Monitoring Active
+    category: Production
+    satisfied_by:
+      any_of:
+        - type: evidencepack/monitoring@v1
+          metadata_conditions:
+            all:
+              - path: $.active
+                op: eq
+                value: true
+
+  - id: PROD-002
+    name: Backup Configured
+    category: Production
+    satisfied_by:
+      any_of:
+        - type: evidencepack/backup-status@v1
+          freshness:
+            max_age_days: 1
+          metadata_conditions:
+            all:
+              - path: $.last_success
+                op: exists

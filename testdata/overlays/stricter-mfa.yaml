@@ -1,0 +1,26 @@
+# Overlay that makes MFA requirements stricter
+id: stricter-mfa
+name: Stricter MFA Overlay
+
+modify:
+  - id: REQ-002
+    name: MFA Coverage (Stricter)
+    control: CC6.2
+    category: Access Control
+    satisfied_by:
+      any_of:
+        # Now requires 100% for pass
+        - type: evidencepack/idp-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.mfa_coverage
+                op: gte
+                value: 100
+        # Any less is high severity
+        - type: evidencepack/idp-posture@v1
+          severity: high
+          metadata_conditions:
+            all:
+              - path: $.mfa_coverage
+                op: gte
+                value: 0

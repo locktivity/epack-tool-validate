@@ -1,0 +1,25 @@
+{
+  "spec_version": "1",
+  "stream": "test",
+  "generated_at": "2024-06-14T12:00:00Z",
+  "pack_digest": "sha256:test123",
+  "sources": [],
+  "artifacts": [
+    {
+      "type": "evidence",
+      "path": "artifacts/idp-posture.json",
+      "digest": "sha256:abc123",
+      "content_type": "application/json",
+      "collected_at": "2024-06-14T12:00:00Z",
+      "schema": "evidencepack/idp-posture@v1"
+    },
+    {
+      "type": "evidence",
+      "path": "artifacts/vuln-scan.json",
+      "digest": "sha256:def456",
+      "content_type": "application/json",
+      "collected_at": "2024-06-14T12:00:00Z",
+      "schema": "evidencepack/vuln-scan@v1"
+    }
+  ]
+}

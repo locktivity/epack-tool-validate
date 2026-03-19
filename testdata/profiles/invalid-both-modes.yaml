@@ -1,0 +1,12 @@
+# Invalid profile - requirement has both any_of and all_of
+id: invalid-both-modes
+name: Invalid Profile
+version: "1.0.0"
+requirements:
+  - id: REQ-001
+    name: Invalid Requirement
+    satisfied_by:
+      any_of:
+        - type: test@v1
+      all_of:
+        - type: test@v1

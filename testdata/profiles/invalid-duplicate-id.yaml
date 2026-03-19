@@ -1,0 +1,15 @@
+# Invalid profile - duplicate requirement IDs
+id: invalid-duplicate-id
+name: Invalid Profile
+version: "1.0.0"
+requirements:
+  - id: REQ-001
+    name: First Requirement
+    satisfied_by:
+      any_of:
+        - type: test@v1
+  - id: REQ-001
+    name: Duplicate ID
+    satisfied_by:
+      any_of:
+        - type: test@v1

@@ -1,0 +1,9 @@
+# Invalid profile - missing required id field
+name: Invalid Profile
+version: "1.0.0"
+requirements:
+  - id: REQ-001
+    name: Test
+    satisfied_by:
+      any_of:
+        - type: test@v1
