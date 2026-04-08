@@ -44,8 +44,12 @@ func (v *Validator) Validate(ctx *Context, profile *compiled.CompiledProfile, pa
 		if reqResult.Status == "pass" {
 			result.Summary.Passed++
 		} else {
-			result.Summary.Failed++
 			result.Status = "fail"
+			if reqResult.FailureKind == "missing" {
+				result.Summary.Missing++
+			} else {
+				result.Summary.Failed++
+			}
 
 			// Track key failures
 			if reqResult.Severity == "critical" || reqResult.Severity == "high" {
@@ -62,6 +66,8 @@ func (v *Validator) Validate(ctx *Context, profile *compiled.CompiledProfile, pa
 			cat := result.ByCategory[req.Category]
 			if reqResult.Status == "pass" {
 				cat.Passed++
+			} else if reqResult.FailureKind == "missing" {
+				cat.Missing++
 			} else {
 				cat.Failed++
 			}
@@ -86,6 +92,7 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 		artifacts := pack.BySchema[clause.Schema]
 		outcomes[i] = v.evaluateClause(ctx, &clause, artifacts)
 	}
+	result.Checks = buildCheckResults(req, outcomes)
 
 	switch req.Mode {
 	case compiled.ClauseModeAny:
@@ -104,7 +111,7 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 				if o.Severity == "" {
 					// No severity = requirement PASSES
 					result.Status = "pass"
-					result.Artifact = o.ArtifactPath
+					populatePassDetailsFromOutcome(&result, o)
 					return result
 				}
 				// Has severity = requirement FAILS with that severity
@@ -151,6 +158,7 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 		result.Status = "fail"
 		result.Severity = "high"
 		bestOutcome := selectBestFailureOutcome(outcomes)
+		result.FailureKind = failureKindForOutcome(bestOutcome)
 		result.Message = bestOutcome.FailureDetail
 		result.Path = bestOutcome.ConditionPath
 		result.Expected = bestOutcome.ConditionExpected
@@ -166,6 +174,7 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 			if !o.Matched {
 				result.Status = "fail"
 				result.Severity = "high"
+				result.FailureKind = failureKindForOutcome(o)
 				result.Message = o.FailureDetail
 				if o.ArtifactPath != "" {
 					result.Artifact = o.ArtifactPath
@@ -187,6 +196,9 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 			return result
 		}
 		result.Status = "pass"
+		if len(outcomes) == 1 {
+			populatePassDetailsFromOutcome(&result, outcomes[0])
+		}
 		return result
 	}
 
@@ -195,6 +207,72 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 	result.Severity = "high"
 	result.Message = "invalid clause mode"
 	return result
+}
+
+func populatePassDetailsFromOutcome(result *RequirementResult, outcome ClauseOutcome) {
+	result.Artifact = outcome.ArtifactPath
+	result.Path = outcome.ConditionPath
+	result.Expected = outcome.ConditionExpected
+	result.Actual = outcome.ConditionActual
+	result.Delta = outcome.ConditionDelta
+}
+
+func buildCheckResults(req *compiled.CompiledRequirement, outcomes []ClauseOutcome) []CheckResult {
+	if len(outcomes) == 0 {
+		return nil
+	}
+
+	checks := make([]CheckResult, 0, len(outcomes))
+	for i, outcome := range outcomes {
+		check := CheckResult{
+			ClauseIndex: i,
+			Schema:      req.Clauses[i].Schema,
+			Status:      checkStatusForOutcome(outcome),
+			Severity:    outcome.Severity,
+			Artifact:    outcome.ArtifactPath,
+			Message:     outcome.FailureDetail,
+			Conditions:  outcome.ConditionChecks,
+		}
+
+		checks = append(checks, check)
+	}
+
+	return checks
+}
+
+func checkStatusForOutcome(outcome ClauseOutcome) string {
+	if outcome.Matched {
+		if outcome.Severity == "" {
+			return "pass"
+		}
+		return "fail"
+	}
+
+	switch outcome.FailureKind {
+	case FailureKindNoMatch:
+		return "missing"
+	case FailureKindFreshness:
+		return "stale"
+	case FailureKindFreshnessMissing:
+		return "freshness_missing"
+	default:
+		return "fail"
+	}
+}
+
+func failureKindForOutcome(outcome ClauseOutcome) string {
+	switch outcome.FailureKind {
+	case FailureKindNoMatch:
+		return "missing"
+	case FailureKindFreshness:
+		return "stale"
+	case FailureKindFreshnessMissing:
+		return "freshness_missing"
+	case FailureKindCondition:
+		return "condition"
+	default:
+		return ""
+	}
 }
 
 func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause, artifacts []IndexedArtifact) ClauseOutcome {
@@ -235,13 +313,13 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 		condResult := evaluateConditionsWithDetails(clause.Conditions, artifact.Body)
 		if condResult.Passed {
 			outcome := ClauseOutcome{
-				Matched:      true,
-				Severity:     clause.Severity,
-				ArtifactPath: artifact.Path,
-				Origin:       clause.Origin,
+				Matched:         true,
+				Severity:        clause.Severity,
+				ArtifactPath:    artifact.Path,
+				Origin:          clause.Origin,
+				ConditionChecks: condResult.Checks,
 			}
-			// For graduated failures (matched with severity), include condition details
-			if clause.Severity != "" && condResult.Detail != nil {
+			if condResult.Detail != nil {
 				outcome.ConditionPath = condResult.Detail.Path
 				outcome.ConditionExpected = condResult.Detail.Expected
 				outcome.ConditionActual = condResult.Detail.Actual
@@ -253,15 +331,18 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 		// Fresh artifact failed conditions - track for reporting
 		if freshConditionFailure == nil {
 			freshConditionFailure = &ClauseOutcome{
-				Matched:           false,
-				FailureKind:       FailureKindCondition,
-				FailureDetail:     "conditions not satisfied",
-				ArtifactPath:      artifact.Path,
-				Origin:            clause.Origin,
-				ConditionPath:     condResult.Detail.Path,
-				ConditionExpected: condResult.Detail.Expected,
-				ConditionActual:   condResult.Detail.Actual,
-				ConditionDelta:    condResult.Detail.Delta,
+				Matched:         false,
+				FailureKind:     FailureKindCondition,
+				FailureDetail:   "conditions not satisfied",
+				ArtifactPath:    artifact.Path,
+				Origin:          clause.Origin,
+				ConditionChecks: condResult.Checks,
+			}
+			if condResult.Detail != nil {
+				freshConditionFailure.ConditionPath = condResult.Detail.Path
+				freshConditionFailure.ConditionExpected = condResult.Detail.Expected
+				freshConditionFailure.ConditionActual = condResult.Detail.Actual
+				freshConditionFailure.ConditionDelta = condResult.Detail.Delta
 			}
 		}
 	}
@@ -302,6 +383,20 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 	}
 }
 
+func conditionCheckFromFailure(detail *ConditionFailure, passed bool) ConditionCheck {
+	if detail == nil {
+		return ConditionCheck{Passed: passed}
+	}
+
+	return ConditionCheck{
+		Path:     detail.Path,
+		Expected: detail.Expected,
+		Actual:   detail.Actual,
+		Delta:    detail.Delta,
+		Passed:   passed,
+	}
+}
+
 // ConditionFailure captures details about a failed condition.
 type ConditionFailure struct {
 	Path     string         // JSONPath that was evaluated
@@ -314,6 +409,7 @@ type ConditionFailure struct {
 type ConditionResult struct {
 	Passed bool
 	Detail *ConditionFailure // Always populated if there are conditions
+	Checks []ConditionCheck
 }
 
 // evaluateConditionsWithDetails evaluates all conditions and returns both pass/fail status
@@ -326,23 +422,25 @@ func evaluateConditionsWithDetails(conditions []compiled.CompiledCondition, body
 	// Always capture the first condition's details for display
 	firstCond := conditions[0]
 	firstPassed, firstDetail := evaluateSingleCondition(&firstCond, body)
+	checks := []ConditionCheck{conditionCheckFromFailure(firstDetail, firstPassed)}
 
 	// If first condition failed, return immediately
 	if !firstPassed {
-		return ConditionResult{Passed: false, Detail: firstDetail}
+		return ConditionResult{Passed: false, Detail: firstDetail, Checks: checks}
 	}
 
 	// Evaluate remaining conditions
 	for i := 1; i < len(conditions); i++ {
 		cond := &conditions[i]
 		passed, detail := evaluateSingleCondition(cond, body)
+		checks = append(checks, conditionCheckFromFailure(detail, passed))
 		if !passed {
-			return ConditionResult{Passed: false, Detail: detail}
+			return ConditionResult{Passed: false, Detail: detail, Checks: checks}
 		}
 	}
 
 	// All conditions passed - return first condition's details for graduated checks
-	return ConditionResult{Passed: true, Detail: firstDetail}
+	return ConditionResult{Passed: true, Detail: firstDetail, Checks: checks}
 }
 
 // evaluateSingleCondition evaluates one condition with cardinality support.

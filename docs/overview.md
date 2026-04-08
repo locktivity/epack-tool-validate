@@ -140,6 +140,7 @@ The tool outputs a `validation.json` file containing:
     "total": 5,
     "passed": 5,
     "failed": 0,
+    "missing": 0,
     "warnings": 0
   },
   "requirements": [
@@ -149,12 +150,31 @@ The tool outputs a `validation.json` file containing:
       "control": "CC6.2",
       "category": "Access Control",
       "status": "pass",
-      "artifact": "artifacts/idp-posture.json"
+      "artifact": "artifacts/idp-posture.json",
+      "path": "$.enabled",
+      "expected": {"op": "eq", "value": true},
+      "actual": true,
+      "checks": [
+        {
+          "clause_index": 0,
+          "schema": "evidencepack/idp-posture@v1",
+          "status": "pass",
+          "artifact": "artifacts/idp-posture.json",
+          "conditions": [
+            {
+              "path": "$.enabled",
+              "expected": {"op": "eq", "value": true},
+              "actual": true,
+              "passed": true
+            }
+          ]
+        }
+      ]
     }
   ],
   "by_category": {
-    "Access Control": {"passed": 3, "failed": 0},
-    "System Operations": {"passed": 2, "failed": 0}
+    "Access Control": {"passed": 3, "failed": 0, "missing": 0},
+    "System Operations": {"passed": 2, "failed": 0, "missing": 0}
   }
 }
 ```

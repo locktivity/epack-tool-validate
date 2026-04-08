@@ -45,4 +45,5 @@ type ClauseOutcome struct {
 	ConditionExpected *ExpectedValue // Structured expected value
 	ConditionActual   any            // Actual value (typed)
 	ConditionDelta    *float64       // Delta for numeric comparisons (actual - expected)
+	ConditionChecks   []ConditionCheck
 }

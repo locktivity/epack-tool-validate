@@ -54,7 +54,8 @@ All requirements are satisfied.
   "summary": {
     "total": 5,
     "passed": 3,
-    "failed": 2,
+    "failed": 1,
+    "missing": 1,
     "warnings": 0
   },
   "requirements": [
@@ -71,14 +72,42 @@ All requirements are satisfied.
       "delta": -15,
       "message": "conditions not satisfied",
       "artifact": "artifacts/idp-posture.json",
-      "path": "$.mfa_coverage"
+      "path": "$.mfa_coverage",
+      "failure_kind": "condition",
+      "checks": [
+        {
+          "clause_index": 0,
+          "schema": "evidencepack/idp-posture@v1",
+          "status": "fail",
+          "artifact": "artifacts/idp-posture.json",
+          "message": "conditions not satisfied",
+          "conditions": [
+            {
+              "path": "$.mfa_coverage",
+              "expected": {"op": "gte", "value": 100},
+              "actual": 85,
+              "delta": -15,
+              "passed": false
+            }
+          ]
+        }
+      ]
     },
     {
       "id": "REQ-002",
       "name": "Vulnerability Scan",
       "status": "fail",
       "severity": "high",
-      "message": "no artifact with schema evidencepack/vuln-scan@v1"
+      "failure_kind": "missing",
+      "message": "no artifact with schema evidencepack/vuln-scan@v1",
+      "checks": [
+        {
+          "clause_index": 0,
+          "schema": "evidencepack/vuln-scan@v1",
+          "status": "missing",
+          "message": "no artifact with schema evidencepack/vuln-scan@v1"
+        }
+      ]
     }
   ],
   "key_failures": [
@@ -99,6 +128,8 @@ The `key_failures` array highlights critical and high severity failures.
 | `delta` | Numeric difference from expected (for numeric comparisons) |
 | `path` | JSONPath that was evaluated |
 | `artifact` | Path to the artifact that was checked |
+| `failure_kind` | Structured failure classification such as `missing` or `condition` |
+| `checks` | Per-clause evaluation details, including missing or passing checks |
 
 ## Example Profiles
 

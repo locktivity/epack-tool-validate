@@ -104,11 +104,29 @@ func TestValidate_AllPass(t *testing.T) {
 	if result.Summary.Failed != 0 {
 		t.Errorf("Summary.Failed = %d, want 0", result.Summary.Failed)
 	}
+	if result.Summary.Missing != 0 {
+		t.Errorf("Summary.Missing = %d, want 0", result.Summary.Missing)
+	}
 	if result.Profile.ID != "test-profile" {
 		t.Errorf("Profile.ID = %q, want %q", result.Profile.ID, "test-profile")
 	}
 	if result.Profile.Digest != "sha256:profile123" {
 		t.Errorf("Profile.Digest = %q, want %q", result.Profile.Digest, "sha256:profile123")
+	}
+	if len(result.Requirements) == 0 {
+		t.Fatal("Requirements should not be empty")
+	}
+	if result.Requirements[0].Artifact != "artifacts/idp-posture.json" {
+		t.Errorf("Requirements[0].Artifact = %q, want %q", result.Requirements[0].Artifact, "artifacts/idp-posture.json")
+	}
+	if result.Requirements[0].Path != "$.enabled" {
+		t.Errorf("Requirements[0].Path = %q, want %q", result.Requirements[0].Path, "$.enabled")
+	}
+	if len(result.Requirements[0].Checks) != 1 {
+		t.Fatalf("Requirements[0].Checks length = %d, want 1", len(result.Requirements[0].Checks))
+	}
+	if result.Requirements[0].Checks[0].Status != "pass" {
+		t.Errorf("Requirements[0].Checks[0].Status = %q, want %q", result.Requirements[0].Checks[0].Status, "pass")
 	}
 }
 
@@ -145,6 +163,9 @@ func TestValidate_FailedRequirement(t *testing.T) {
 	}
 	if result.Summary.Failed != 1 {
 		t.Errorf("Summary.Failed = %d, want 1", result.Summary.Failed)
+	}
+	if result.Summary.Missing != 0 {
+		t.Errorf("Summary.Missing = %d, want 0", result.Summary.Missing)
 	}
 }
 
@@ -193,8 +214,11 @@ func TestValidate_MixedResults(t *testing.T) {
 	if result.Summary.Passed != 1 {
 		t.Errorf("Summary.Passed = %d, want 1", result.Summary.Passed)
 	}
-	if result.Summary.Failed != 1 {
-		t.Errorf("Summary.Failed = %d, want 1", result.Summary.Failed)
+	if result.Summary.Failed != 0 {
+		t.Errorf("Summary.Failed = %d, want 0", result.Summary.Failed)
+	}
+	if result.Summary.Missing != 1 {
+		t.Errorf("Summary.Missing = %d, want 1", result.Summary.Missing)
 	}
 }
 
@@ -295,8 +319,11 @@ func TestValidate_CategorySummary(t *testing.T) {
 	if securityCat.Passed != 1 {
 		t.Errorf("Security.Passed = %d, want 1", securityCat.Passed)
 	}
-	if securityCat.Failed != 1 {
-		t.Errorf("Security.Failed = %d, want 1", securityCat.Failed)
+	if securityCat.Failed != 0 {
+		t.Errorf("Security.Failed = %d, want 0", securityCat.Failed)
+	}
+	if securityCat.Missing != 1 {
+		t.Errorf("Security.Missing = %d, want 1", securityCat.Missing)
 	}
 
 	complianceCat := result.ByCategory["Compliance"]
@@ -305,6 +332,9 @@ func TestValidate_CategorySummary(t *testing.T) {
 	}
 	if complianceCat.Failed != 0 {
 		t.Errorf("Compliance.Failed = %d, want 0", complianceCat.Failed)
+	}
+	if complianceCat.Missing != 0 {
+		t.Errorf("Compliance.Missing = %d, want 0", complianceCat.Missing)
 	}
 }
 
@@ -348,6 +378,15 @@ func TestValidate_ClauseModeAny_FirstMatchWins(t *testing.T) {
 	}
 	if len(result.Requirements) > 0 && result.Requirements[0].Status != "pass" {
 		t.Errorf("Requirements[0].Status = %q, want %q", result.Requirements[0].Status, "pass")
+	}
+	if len(result.Requirements) == 0 || len(result.Requirements[0].Checks) != 2 {
+		t.Fatalf("Requirements[0].Checks length = %d, want 2", len(result.Requirements[0].Checks))
+	}
+	if result.Requirements[0].Checks[0].Status != "pass" {
+		t.Errorf("Requirements[0].Checks[0].Status = %q, want %q", result.Requirements[0].Checks[0].Status, "pass")
+	}
+	if result.Requirements[0].Checks[1].Status != "fail" {
+		t.Errorf("Requirements[0].Checks[1].Status = %q, want %q", result.Requirements[0].Checks[1].Status, "fail")
 	}
 }
 
@@ -625,6 +664,16 @@ func TestValidate_ClauseModeAll(t *testing.T) {
 	if result.Status != "pass" {
 		t.Errorf("Status = %q, want %q", result.Status, "pass")
 	}
+	if len(result.Requirements) == 0 {
+		t.Fatal("Requirements should not be empty")
+	}
+	if len(result.Requirements[0].Checks) != 2 {
+		t.Fatalf("Requirements[0].Checks length = %d, want 2", len(result.Requirements[0].Checks))
+	}
+	if result.Requirements[0].Checks[0].Status != "pass" || result.Requirements[0].Checks[1].Status != "pass" {
+		t.Errorf("Requirements[0].Checks statuses = [%q %q], want [pass pass]",
+			result.Requirements[0].Checks[0].Status, result.Requirements[0].Checks[1].Status)
+	}
 }
 
 func TestValidate_ClauseModeAll_OneFails(t *testing.T) {
@@ -870,6 +919,21 @@ func TestValidate_NoArtifactMatch(t *testing.T) {
 	if result.Status != "fail" {
 		t.Errorf("Status = %q, want %q", result.Status, "fail")
 	}
+	if len(result.Requirements) == 0 {
+		t.Fatal("Requirements should not be empty")
+	}
+	if result.Requirements[0].FailureKind != "missing" {
+		t.Errorf("Requirements[0].FailureKind = %q, want %q", result.Requirements[0].FailureKind, "missing")
+	}
+	if len(result.Requirements[0].Checks) != 1 {
+		t.Fatalf("Requirements[0].Checks length = %d, want 1", len(result.Requirements[0].Checks))
+	}
+	if result.Requirements[0].Checks[0].Status != "missing" {
+		t.Errorf("Requirements[0].Checks[0].Status = %q, want %q", result.Requirements[0].Checks[0].Status, "missing")
+	}
+	if result.Summary.Missing != 1 {
+		t.Errorf("Summary.Missing = %d, want 1", result.Summary.Missing)
+	}
 	// Default severity for no match is "high"
 	if len(result.Requirements) > 0 && result.Requirements[0].Severity != "high" {
 		t.Errorf("Requirements[0].Severity = %q, want %q", result.Requirements[0].Severity, "high")
@@ -942,6 +1006,20 @@ func TestValidate_MultipleConditions(t *testing.T) {
 	if result.Status != "pass" {
 		t.Errorf("Status = %q, want %q", result.Status, "pass")
 	}
+	if len(result.Requirements) == 0 {
+		t.Fatal("Requirements should not be empty")
+	}
+	if len(result.Requirements[0].Checks) != 1 {
+		t.Fatalf("Requirements[0].Checks length = %d, want 1", len(result.Requirements[0].Checks))
+	}
+	if len(result.Requirements[0].Checks[0].Conditions) != 3 {
+		t.Fatalf("Requirements[0].Checks[0].Conditions length = %d, want 3", len(result.Requirements[0].Checks[0].Conditions))
+	}
+	for i, check := range result.Requirements[0].Checks[0].Conditions {
+		if !check.Passed {
+			t.Errorf("Requirements[0].Checks[0].Conditions[%d].Passed = false, want true", i)
+		}
+	}
 }
 
 func TestValidate_MultipleConditions_OneFails(t *testing.T) {
@@ -977,6 +1055,21 @@ func TestValidate_MultipleConditions_OneFails(t *testing.T) {
 
 	if result.Status != "fail" {
 		t.Errorf("Status = %q, want %q", result.Status, "fail")
+	}
+	if len(result.Requirements) == 0 {
+		t.Fatal("Requirements should not be empty")
+	}
+	if len(result.Requirements[0].Checks) != 1 {
+		t.Fatalf("Requirements[0].Checks length = %d, want 1", len(result.Requirements[0].Checks))
+	}
+	if len(result.Requirements[0].Checks[0].Conditions) != 2 {
+		t.Fatalf("Requirements[0].Checks[0].Conditions length = %d, want 2", len(result.Requirements[0].Checks[0].Conditions))
+	}
+	if !result.Requirements[0].Checks[0].Conditions[0].Passed {
+		t.Error("Requirements[0].Checks[0].Conditions[0].Passed = false, want true")
+	}
+	if result.Requirements[0].Checks[0].Conditions[1].Passed {
+		t.Error("Requirements[0].Checks[0].Conditions[1].Passed = true, want false")
 	}
 }
 

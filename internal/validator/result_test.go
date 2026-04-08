@@ -21,6 +21,7 @@ func TestResult_JSONMarshal(t *testing.T) {
 			Total:    5,
 			Passed:   4,
 			Failed:   1,
+			Missing:  0,
 			Warnings: 0,
 		},
 		Requirements: []RequirementResult{
@@ -31,7 +32,7 @@ func TestResult_JSONMarshal(t *testing.T) {
 			},
 		},
 		ByCategory: map[string]CategorySummary{
-			"Security": {Passed: 3, Failed: 1},
+			"Security": {Passed: 3, Failed: 1, Missing: 0},
 		},
 	}
 
@@ -118,6 +119,7 @@ func TestSummary_JSONMarshal(t *testing.T) {
 		Total:    10,
 		Passed:   7,
 		Failed:   2,
+		Missing:  1,
 		Warnings: 1,
 	}
 
@@ -138,8 +140,9 @@ func TestSummary_JSONMarshal(t *testing.T) {
 
 func TestCategorySummary_JSONMarshal(t *testing.T) {
 	cat := CategorySummary{
-		Passed: 5,
-		Failed: 2,
+		Passed:  5,
+		Failed:  2,
+		Missing: 1,
 	}
 
 	data, err := json.Marshal(cat)
@@ -182,18 +185,37 @@ func TestKeyFailure_JSONMarshal(t *testing.T) {
 func TestRequirementResult_JSONMarshal(t *testing.T) {
 	delta := -15.0
 	result := RequirementResult{
-		ID:       "REQ-002",
-		Name:     "MFA Coverage",
-		Control:  "CC6.2",
-		Category: "Access Control",
-		Severity: "high",
-		Status:   "fail",
-		Expected: &ExpectedValue{Op: "gte", Value: 100},
-		Actual:   85.0,
-		Delta:    &delta,
-		Message:  "MFA coverage below threshold",
-		Artifact: "artifacts/idp-posture.json",
-		Path:     "$.mfa_coverage",
+		ID:          "REQ-002",
+		Name:        "MFA Coverage",
+		Control:     "CC6.2",
+		Category:    "Access Control",
+		Severity:    "high",
+		Status:      "fail",
+		FailureKind: "condition",
+		Expected:    &ExpectedValue{Op: "gte", Value: 100},
+		Actual:      85.0,
+		Delta:       &delta,
+		Message:     "MFA coverage below threshold",
+		Artifact:    "artifacts/idp-posture.json",
+		Path:        "$.mfa_coverage",
+		Checks: []CheckResult{
+			{
+				ClauseIndex: 0,
+				Schema:      "evidencepack/idp-posture@v1",
+				Status:      "fail",
+				Artifact:    "artifacts/idp-posture.json",
+				Message:     "conditions not satisfied",
+				Conditions: []ConditionCheck{
+					{
+						Path:     "$.mfa_coverage",
+						Expected: &ExpectedValue{Op: "gte", Value: 100},
+						Actual:   85.0,
+						Delta:    &delta,
+						Passed:   false,
+					},
+				},
+			},
+		},
 	}
 
 	data, err := json.Marshal(result)
@@ -212,10 +234,25 @@ func TestRequirementResult_JSONMarshal(t *testing.T) {
 	if decoded.Status != result.Status {
 		t.Errorf("Status = %q, want %q", decoded.Status, result.Status)
 	}
+	if decoded.FailureKind != result.FailureKind {
+		t.Errorf("FailureKind = %q, want %q", decoded.FailureKind, result.FailureKind)
+	}
 	if decoded.Delta == nil {
 		t.Error("Delta should not be nil")
 	} else if *decoded.Delta != *result.Delta {
 		t.Errorf("Delta = %v, want %v", *decoded.Delta, *result.Delta)
+	}
+	if len(decoded.Checks) != 1 {
+		t.Fatalf("Checks length = %d, want 1", len(decoded.Checks))
+	}
+	if decoded.Checks[0].Status != "fail" {
+		t.Errorf("Checks[0].Status = %q, want %q", decoded.Checks[0].Status, "fail")
+	}
+	if len(decoded.Checks[0].Conditions) != 1 {
+		t.Fatalf("Checks[0].Conditions length = %d, want 1", len(decoded.Checks[0].Conditions))
+	}
+	if decoded.Checks[0].Conditions[0].Passed {
+		t.Error("Checks[0].Conditions[0].Passed = true, want false")
 	}
 }
 
@@ -237,7 +274,7 @@ func TestRequirementResult_OmitEmpty(t *testing.T) {
 		t.Fatalf("json.Unmarshal() error: %v", err)
 	}
 
-	optionalFields := []string{"control", "category", "severity", "expected", "actual", "delta", "message", "artifact", "path"}
+	optionalFields := []string{"control", "category", "severity", "failure_kind", "expected", "actual", "delta", "message", "artifact", "path", "checks"}
 	for _, field := range optionalFields {
 		if _, exists := m[field]; exists {
 			t.Errorf("field %q should be omitted when empty", field)
