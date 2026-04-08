@@ -54,6 +54,7 @@ type RequirementResult struct {
 	Severity    string         `json:"severity,omitempty"`     // "critical" | "high" | "medium" | "low"
 	Status      string         `json:"status"`                 // "pass" | "fail"
 	FailureKind string         `json:"failure_kind,omitempty"` // "missing" | "stale" | "freshness_missing" | "condition"
+	Mode        string         `json:"mode,omitempty"`         // "any_of" | "all_of" - how clauses are evaluated
 	Expected    *ExpectedValue `json:"expected,omitempty"`     // Structured expected value
 	Actual      any            `json:"actual,omitempty"`       // Actual value (typed)
 	Delta       *float64       `json:"delta,omitempty"`        // For numeric comparisons
@@ -69,6 +70,7 @@ type CheckResult struct {
 	Schema      string           `json:"schema"`
 	Status      string           `json:"status"` // "pass" | "fail" | "missing" | "stale" | "freshness_missing"
 	Severity    string           `json:"severity,omitempty"`
+	Selected    bool             `json:"selected,omitempty"` // True if this check determined the requirement's outcome
 	Artifact    string           `json:"artifact,omitempty"`
 	Message     string           `json:"message,omitempty"`
 	Conditions  []ConditionCheck `json:"conditions,omitempty"`

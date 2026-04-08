@@ -84,6 +84,7 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 		Name:     req.Name,
 		Control:  req.Control,
 		Category: req.Category,
+		Mode:     req.Mode.String(), // "any_of" or "all_of"
 	}
 
 	// Evaluate all clauses
@@ -92,10 +93,11 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 		artifacts := pack.BySchema[clause.Schema]
 		outcomes[i] = v.evaluateClause(ctx, &clause, artifacts)
 	}
-	result.Checks = buildCheckResults(req, outcomes)
 
 	switch req.Mode {
 	case compiled.ClauseModeAny:
+		// Track which clause index is selected (determines outcome)
+		var selectedClauseIndex int
 		// For graduated failures, we want to show the "pass" threshold (first clause)
 		// rather than the matched fallback clause. Capture first clause's details.
 		var firstClauseDetails *ClauseOutcome
@@ -110,8 +112,10 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 			if o.Matched {
 				if o.Severity == "" {
 					// No severity = requirement PASSES
+					selectedClauseIndex = i // This clause determined the outcome
 					result.Status = "pass"
 					populatePassDetailsFromOutcome(&result, o)
+					result.Checks = buildCheckResults(req, outcomes, selectedClauseIndex)
 					return result
 				}
 				// Has severity = requirement FAILS with that severity
@@ -138,6 +142,8 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 
 				if canUseFirstClause {
 					// Use first clause's failure details entirely (path, expected, actual, delta)
+					// Also mark first clause as selected since it shows the pass threshold
+					selectedClauseIndex = 0
 					result.Path = firstClauseDetails.ConditionPath
 					result.Expected = firstClauseDetails.ConditionExpected
 					result.Actual = firstClauseDetails.ConditionActual
@@ -145,11 +151,13 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 				} else {
 					// First clause matched with severity, no first clause details,
 					// or single-condition clauses check different paths - use matched clause's details
+					selectedClauseIndex = i
 					result.Path = o.ConditionPath
 					result.Expected = o.ConditionExpected
 					result.Actual = o.ConditionActual
 					result.Delta = o.ConditionDelta
 				}
+				result.Checks = buildCheckResults(req, outcomes, selectedClauseIndex)
 				return result
 			}
 		}
@@ -158,6 +166,7 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 		result.Status = "fail"
 		result.Severity = "high"
 		bestOutcome := selectBestFailureOutcome(outcomes)
+		selectedClauseIndex = selectBestFailureIndex(outcomes) // Track which outcome we're using
 		result.FailureKind = failureKindForOutcome(bestOutcome)
 		result.Message = bestOutcome.FailureDetail
 		result.Path = bestOutcome.ConditionPath
@@ -165,12 +174,14 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 		result.Actual = bestOutcome.ConditionActual
 		result.Delta = bestOutcome.ConditionDelta
 		result.Artifact = bestOutcome.ArtifactPath
+		result.Checks = buildCheckResults(req, outcomes, selectedClauseIndex)
 		return result
 
 	case compiled.ClauseModeAll:
 		// All clauses must match AND have no severity to pass
+		// For all_of mode, don't mark any check as selected (all matter equally)
 		var highestSeverity string
-		for _, o := range outcomes {
+		for i, o := range outcomes {
 			if !o.Matched {
 				result.Status = "fail"
 				result.Severity = "high"
@@ -184,6 +195,10 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 				result.Expected = o.ConditionExpected
 				result.Actual = o.ConditionActual
 				result.Delta = o.ConditionDelta
+				// For all_of, the first failing check is technically the "blocker"
+				// but we don't mark it as selected since all checks matter
+				_ = i // silence unused variable
+				result.Checks = buildCheckResults(req, outcomes, -1) // -1 = no selected
 				return result
 			}
 			if o.Severity != "" {
@@ -193,12 +208,14 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 		if highestSeverity != "" {
 			result.Status = "fail"
 			result.Severity = highestSeverity
+			result.Checks = buildCheckResults(req, outcomes, -1)
 			return result
 		}
 		result.Status = "pass"
 		if len(outcomes) == 1 {
 			populatePassDetailsFromOutcome(&result, outcomes[0])
 		}
+		result.Checks = buildCheckResults(req, outcomes, -1)
 		return result
 	}
 
@@ -206,6 +223,7 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 	result.Status = "fail"
 	result.Severity = "high"
 	result.Message = "invalid clause mode"
+	result.Checks = buildCheckResults(req, outcomes, -1)
 	return result
 }
 
@@ -217,7 +235,7 @@ func populatePassDetailsFromOutcome(result *RequirementResult, outcome ClauseOut
 	result.Delta = outcome.ConditionDelta
 }
 
-func buildCheckResults(req *compiled.CompiledRequirement, outcomes []ClauseOutcome) []CheckResult {
+func buildCheckResults(req *compiled.CompiledRequirement, outcomes []ClauseOutcome, selectedIndex int) []CheckResult {
 	if len(outcomes) == 0 {
 		return nil
 	}
@@ -229,6 +247,7 @@ func buildCheckResults(req *compiled.CompiledRequirement, outcomes []ClauseOutco
 			Schema:      req.Clauses[i].Schema,
 			Status:      checkStatusForOutcome(outcome),
 			Severity:    outcome.Severity,
+			Selected:    i == selectedIndex, // Mark the decisive check
 			Artifact:    outcome.ArtifactPath,
 			Message:     outcome.FailureDetail,
 			Conditions:  outcome.ConditionChecks,
@@ -706,23 +725,33 @@ func evaluatePresenceCondition(cond *compiled.CompiledCondition, body any, value
 // Prioritizes condition failures (which have path/expected/actual details)
 // over freshness or no-match failures.
 func selectBestFailureOutcome(outcomes []ClauseOutcome) ClauseOutcome {
+	idx := selectBestFailureIndex(outcomes)
+	if idx >= 0 && idx < len(outcomes) {
+		return outcomes[idx]
+	}
+	return ClauseOutcome{FailureDetail: "no matching clause found"}
+}
+
+// selectBestFailureIndex returns the index of the most informative failure outcome.
+// Used to mark the selected check in any_of failures.
+func selectBestFailureIndex(outcomes []ClauseOutcome) int {
 	// First priority: condition failures with details
-	for _, o := range outcomes {
+	for i, o := range outcomes {
 		if o.FailureKind == FailureKindCondition && o.ConditionPath != "" {
-			return o
+			return i
 		}
 	}
 
 	// Second priority: any failure with a detail message
-	for _, o := range outcomes {
+	for i, o := range outcomes {
 		if o.FailureDetail != "" {
-			return o
+			return i
 		}
 	}
 
-	// Fallback: first outcome or empty
+	// Fallback: first outcome
 	if len(outcomes) > 0 {
-		return outcomes[0]
+		return 0
 	}
-	return ClauseOutcome{FailureDetail: "no matching clause found"}
+	return -1
 }

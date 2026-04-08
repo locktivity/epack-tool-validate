@@ -388,6 +388,19 @@ func TestValidate_ClauseModeAny_FirstMatchWins(t *testing.T) {
 	if result.Requirements[0].Checks[1].Status != "fail" {
 		t.Errorf("Requirements[0].Checks[1].Status = %q, want %q", result.Requirements[0].Checks[1].Status, "fail")
 	}
+
+	// Verify Mode field is set correctly
+	if result.Requirements[0].Mode != "any_of" {
+		t.Errorf("Requirements[0].Mode = %q, want %q", result.Requirements[0].Mode, "any_of")
+	}
+
+	// Verify Selected field marks the winning check (first clause that passed)
+	if !result.Requirements[0].Checks[0].Selected {
+		t.Error("Requirements[0].Checks[0].Selected = false, want true (this check determined the outcome)")
+	}
+	if result.Requirements[0].Checks[1].Selected {
+		t.Error("Requirements[0].Checks[1].Selected = true, want false (this check did not determine the outcome)")
+	}
 }
 
 func TestValidate_ClauseModeAny_GraduatedSeverity(t *testing.T) {
@@ -673,6 +686,18 @@ func TestValidate_ClauseModeAll(t *testing.T) {
 	if result.Requirements[0].Checks[0].Status != "pass" || result.Requirements[0].Checks[1].Status != "pass" {
 		t.Errorf("Requirements[0].Checks statuses = [%q %q], want [pass pass]",
 			result.Requirements[0].Checks[0].Status, result.Requirements[0].Checks[1].Status)
+	}
+
+	// Verify Mode field is set correctly
+	if result.Requirements[0].Mode != "all_of" {
+		t.Errorf("Requirements[0].Mode = %q, want %q", result.Requirements[0].Mode, "all_of")
+	}
+
+	// For all_of mode, no check is marked as selected because all checks matter equally
+	for i, check := range result.Requirements[0].Checks {
+		if check.Selected {
+			t.Errorf("Checks[%d].Selected = true, want false (all_of mode: all checks matter equally)", i)
+		}
 	}
 }
 
@@ -1107,6 +1132,201 @@ func TestValidate_NoConditions(t *testing.T) {
 	}
 }
 
+func TestValidate_ModeAndSelected_AnyOf_Failure(t *testing.T) {
+	ctx := makeTestContext()
+	pack := makeTestPackIndex()
+	v := New()
+
+	// Test graduated failure: first clause (pass threshold) should be selected,
+	// not the matched low-threshold clause. This prevents contradictory UX where
+	// the requirement fails but the selected check shows its condition as PASS.
+	profile := &compiled.CompiledProfile{
+		ID:      "test-profile",
+		Name:    "Test Profile",
+		Version: "1.0.0",
+		Requirements: []compiled.CompiledRequirement{
+			{
+				ID:   "REQ-001",
+				Name: "Graduated Failure",
+				Mode: compiled.ClauseModeAny,
+				Clauses: []compiled.CompiledClause{
+					{
+						Schema:     "evidencepack/idp-posture@v1",
+						Conditions: []compiled.CompiledCondition{makeCompiledCondition("$.mfa_coverage", "gte", 150.0)}, // Will fail
+						// No severity = full pass threshold
+						Origin: compiled.Origin{RequirementID: "REQ-001", ClauseIndex: 0},
+					},
+					{
+						Schema:     "evidencepack/idp-posture@v1",
+						Severity:   "low",
+						Conditions: []compiled.CompiledCondition{makeCompiledCondition("$.mfa_coverage", "gte", 90.0)}, // Will match but with severity
+						Origin:     compiled.Origin{RequirementID: "REQ-001", ClauseIndex: 1},
+					},
+				},
+			},
+		},
+	}
+
+	result := v.Validate(ctx, profile, pack, "")
+
+	// Should fail because best match has severity
+	if result.Status != "fail" {
+		t.Errorf("Status = %q, want %q", result.Status, "fail")
+	}
+
+	req := result.Requirements[0]
+
+	// Verify Mode field
+	if req.Mode != "any_of" {
+		t.Errorf("Mode = %q, want %q", req.Mode, "any_of")
+	}
+
+	if len(req.Checks) != 2 {
+		t.Fatalf("Checks length = %d, want 2", len(req.Checks))
+	}
+
+	// For graduated failures, the FIRST clause (pass threshold) should be selected
+	// because it shows what the user needs to achieve - this prevents the contradictory
+	// UX where requirement fails but the selected check shows PASS
+	if !req.Checks[0].Selected {
+		t.Error("Checks[0].Selected = false, want true (pass threshold shows what's needed for compliance)")
+	}
+	if req.Checks[1].Selected {
+		t.Error("Checks[1].Selected = true, want false (matched with severity, but not the pass threshold)")
+	}
+
+	// The first check should show FAIL (100 < 150) which aligns with the requirement status
+	if req.Checks[0].Status != "fail" {
+		t.Errorf("Checks[0].Status = %q, want %q (first clause failed to match)", req.Checks[0].Status, "fail")
+	}
+
+	// CRITICAL: The selected check's inner conditions must show passed=false
+	// This guards against the contradictory UX where requirement fails but condition shows PASS
+	if len(req.Checks[0].Conditions) == 0 {
+		t.Fatal("Checks[0].Conditions should not be empty")
+	}
+	if req.Checks[0].Conditions[0].Passed {
+		t.Error("Checks[0].Conditions[0].Passed = true, want false (selected check's condition must align with FAIL status)")
+	}
+
+	// The second check (matched with severity) should show FAIL status
+	// but its inner condition shows passed=true (met the low threshold)
+	// This is OK because it's not the selected check (shown in alternative thresholds)
+	if req.Checks[1].Status != "fail" {
+		t.Errorf("Checks[1].Status = %q, want %q (matched with severity)", req.Checks[1].Status, "fail")
+	}
+	if len(req.Checks[1].Conditions) == 0 {
+		t.Fatal("Checks[1].Conditions should not be empty")
+	}
+	if !req.Checks[1].Conditions[0].Passed {
+		t.Error("Checks[1].Conditions[0].Passed = false, want true (met the low threshold)")
+	}
+}
+
+func TestValidate_ModeAndSelected_AllOf_Failure(t *testing.T) {
+	ctx := makeTestContext()
+	pack := makeTestPackIndex()
+	v := New()
+
+	// Test all_of mode where one clause fails
+	profile := &compiled.CompiledProfile{
+		ID:      "test-profile",
+		Name:    "Test Profile",
+		Version: "1.0.0",
+		Requirements: []compiled.CompiledRequirement{
+			{
+				ID:   "REQ-001",
+				Name: "All Must Match",
+				Mode: compiled.ClauseModeAll,
+				Clauses: []compiled.CompiledClause{
+					{
+						Schema:     "evidencepack/idp-posture@v1",
+						Conditions: []compiled.CompiledCondition{makeCompiledCondition("$.enabled", "eq", true)}, // Will pass
+						Origin:     compiled.Origin{RequirementID: "REQ-001", ClauseIndex: 0},
+					},
+					{
+						Schema:     "evidencepack/idp-posture@v1",
+						Conditions: []compiled.CompiledCondition{makeCompiledCondition("$.mfa_coverage", "gte", 200.0)}, // Will fail
+						Origin:     compiled.Origin{RequirementID: "REQ-001", ClauseIndex: 1},
+					},
+				},
+			},
+		},
+	}
+
+	result := v.Validate(ctx, profile, pack, "")
+
+	// Should fail because one clause fails
+	if result.Status != "fail" {
+		t.Errorf("Status = %q, want %q", result.Status, "fail")
+	}
+
+	req := result.Requirements[0]
+
+	// Verify Mode field
+	if req.Mode != "all_of" {
+		t.Errorf("Mode = %q, want %q", req.Mode, "all_of")
+	}
+
+	if len(req.Checks) != 2 {
+		t.Fatalf("Checks length = %d, want 2", len(req.Checks))
+	}
+
+	// For all_of mode, no check is marked as selected - all checks matter equally
+	for i, check := range req.Checks {
+		if check.Selected {
+			t.Errorf("Checks[%d].Selected = true, want false (all_of mode: all checks matter equally)", i)
+		}
+	}
+}
+
+func TestValidate_ModeAndSelected_SingleClause(t *testing.T) {
+	ctx := makeTestContext()
+	pack := makeTestPackIndex()
+	v := New()
+
+	// Test with single clause - it should always be selected
+	profile := &compiled.CompiledProfile{
+		ID:      "test-profile",
+		Name:    "Test Profile",
+		Version: "1.0.0",
+		Requirements: []compiled.CompiledRequirement{
+			{
+				ID:   "REQ-001",
+				Name: "Single Clause",
+				Mode: compiled.ClauseModeAny,
+				Clauses: []compiled.CompiledClause{
+					{
+						Schema:     "evidencepack/idp-posture@v1",
+						Conditions: []compiled.CompiledCondition{makeCompiledCondition("$.enabled", "eq", true)},
+						Origin:     compiled.Origin{RequirementID: "REQ-001", ClauseIndex: 0},
+					},
+				},
+			},
+		},
+	}
+
+	result := v.Validate(ctx, profile, pack, "")
+
+	if result.Status != "pass" {
+		t.Errorf("Status = %q, want %q", result.Status, "pass")
+	}
+
+	req := result.Requirements[0]
+
+	if req.Mode != "any_of" {
+		t.Errorf("Mode = %q, want %q", req.Mode, "any_of")
+	}
+
+	if len(req.Checks) != 1 {
+		t.Fatalf("Checks length = %d, want 1", len(req.Checks))
+	}
+
+	if !req.Checks[0].Selected {
+		t.Error("Checks[0].Selected = false, want true (single clause should be selected)")
+	}
+}
+
 func TestEvaluateConditionsWithDetails(t *testing.T) {
 	body := map[string]any{
 		"enabled": true,
@@ -1217,6 +1437,60 @@ func TestEvaluateConditionsWithDetails(t *testing.T) {
 		}
 		if result.Detail.Actual != 100.0 {
 			t.Errorf("Actual = %v, want %v", result.Detail.Actual, 100.0)
+		}
+	})
+}
+
+func TestSelectBestFailureIndex(t *testing.T) {
+	t.Run("prioritizes condition failures with path", func(t *testing.T) {
+		outcomes := []ClauseOutcome{
+			{FailureKind: FailureKindNoMatch, FailureDetail: "no artifact"},
+			{FailureKind: FailureKindCondition, FailureDetail: "condition failed", ConditionPath: "$.mfa"},
+		}
+		idx := selectBestFailureIndex(outcomes)
+		if idx != 1 {
+			t.Errorf("selectBestFailureIndex = %d, want 1 (condition failure)", idx)
+		}
+	})
+
+	t.Run("falls back to first with detail when no condition failures", func(t *testing.T) {
+		outcomes := []ClauseOutcome{
+			{FailureKind: FailureKindNoMatch, FailureDetail: "no artifact"},
+			{FailureKind: FailureKindFreshness, FailureDetail: "too old"},
+		}
+		idx := selectBestFailureIndex(outcomes)
+		// Returns first with detail (index 0), not by failure kind
+		if idx != 0 {
+			t.Errorf("selectBestFailureIndex = %d, want 0 (first with detail)", idx)
+		}
+	})
+
+	t.Run("returns first condition failure when multiple exist", func(t *testing.T) {
+		outcomes := []ClauseOutcome{
+			{FailureKind: FailureKindCondition, FailureDetail: "first condition", ConditionPath: "$.a"},
+			{FailureKind: FailureKindCondition, FailureDetail: "second condition", ConditionPath: "$.b"},
+		}
+		idx := selectBestFailureIndex(outcomes)
+		if idx != 0 {
+			t.Errorf("selectBestFailureIndex = %d, want 0 (first condition failure)", idx)
+		}
+	})
+
+	t.Run("returns -1 for empty outcomes", func(t *testing.T) {
+		idx := selectBestFailureIndex(nil)
+		if idx != -1 {
+			t.Errorf("selectBestFailureIndex = %d, want -1 (empty outcomes)", idx)
+		}
+	})
+
+	t.Run("returns 0 when all are no match without details", func(t *testing.T) {
+		outcomes := []ClauseOutcome{
+			{FailureKind: FailureKindNoMatch},
+			{FailureKind: FailureKindNoMatch},
+		}
+		idx := selectBestFailureIndex(outcomes)
+		if idx != 0 {
+			t.Errorf("selectBestFailureIndex = %d, want 0 (first by default)", idx)
 		}
 	})
 }
