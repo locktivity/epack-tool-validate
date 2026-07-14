@@ -5,21 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
+	"time"
 )
 
 // Operator represents a comparison operator.
 type Operator int
 
 const (
-	OpInvalid   Operator = iota
-	OpEq                 // equals
-	OpNeq                // not equals
-	OpGt                 // greater than
-	OpGte                // greater than or equal
-	OpLt                 // less than
-	OpLte                // less than or equal
-	OpExists             // path exists (value is non-nil)
-	OpNotExists          // path does not exist (value is nil)
+	OpInvalid    Operator = iota
+	OpEq                  // equals
+	OpNeq                 // not equals
+	OpGt                  // greater than
+	OpGte                 // greater than or equal
+	OpLt                  // less than
+	OpLte                 // less than or equal
+	OpExists              // path exists (value is non-nil)
+	OpNotExists           // path does not exist (value is nil)
+	OpMaxAgeDays          // ISO date or RFC3339 timestamp is not older than N days
 )
 
 func (op Operator) String() string {
@@ -40,6 +43,8 @@ func (op Operator) String() string {
 		return "exists"
 	case OpNotExists:
 		return "not_exists"
+	case OpMaxAgeDays:
+		return "max_age_days"
 	default:
 		return "invalid"
 	}
@@ -64,12 +69,15 @@ func ParseOperator(s string) (Operator, error) {
 		return OpExists, nil
 	case "not_exists":
 		return OpNotExists, nil
+	case "max_age_days":
+		return OpMaxAgeDays, nil
 	default:
 		return OpInvalid, fmt.Errorf("unknown operator: %q", s)
 	}
 }
 
 // Apply evaluates the operator against actual and expected values.
+// OpMaxAgeDays needs a clock and always returns false here; use ApplyAt.
 func (op Operator) Apply(actual, expected any) bool {
 	switch op {
 	case OpEq:
@@ -98,6 +106,66 @@ func (op Operator) Apply(actual, expected any) bool {
 		return actual == nil
 	}
 	return false
+}
+
+// ApplyAt evaluates the operator against actual and expected values,
+// using now as the clock for time-based operators.
+func (op Operator) ApplyAt(actual, expected any, now time.Time) bool {
+	if op == OpMaxAgeDays {
+		return maxAgeDays(actual, expected, now)
+	}
+	return op.Apply(actual, expected)
+}
+
+func maxAgeDays(actual, expected any, now time.Time) bool {
+	maxDays, ok := NormalizeNumeric(expected)
+	if !ok || maxDays < 0 {
+		return false
+	}
+
+	t, dateOnly, ok := parseTimeValue(actual)
+	if !ok {
+		return false
+	}
+
+	maxAge := time.Duration(maxDays) * 24 * time.Hour
+	if dateOnly {
+		// Date-only values carry no timezone; tolerate one day in the
+		// future so a document dated "today" in a timezone ahead of UTC
+		// does not fail until UTC catches up.
+		age := utcDate(now).Sub(utcDate(t))
+		return age >= -24*time.Hour && age <= maxAge
+	}
+
+	age := now.Sub(t)
+	return age >= 0 && age <= maxAge
+}
+
+func parseTimeValue(value any) (time.Time, bool, bool) {
+	text, ok := value.(string)
+	if !ok {
+		return time.Time{}, false, false
+	}
+
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return time.Time{}, false, false
+	}
+
+	if parsed, err := time.Parse("2006-01-02", text); err == nil {
+		return parsed, true, true
+	}
+
+	if parsed, err := time.Parse(time.RFC3339, text); err == nil {
+		return parsed, false, true
+	}
+
+	return time.Time{}, false, false
+}
+
+func utcDate(t time.Time) time.Time {
+	year, month, day := t.UTC().Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 }
 
 // equalValues compares two values with type normalization.

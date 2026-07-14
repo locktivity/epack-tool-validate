@@ -59,6 +59,7 @@ Conditions use JSONPath expressions to evaluate artifact metadata:
 | `lte` | Less than or equal |
 | `exists` | Value exists (not null) |
 | `not_exists` | Value does not exist (null) |
+| `max_age_days` | ISO date or RFC3339 timestamp is no older than `value` days (date-only values may be up to one day in the future to absorb timezone differences) |
 
 ### Cardinality for Multi-Value Paths
 
@@ -118,6 +119,17 @@ Clauses can require artifacts to be recent:
       - path: $.critical_count
         op: eq
         value: 0
+```
+
+Use `max_age_days` when the date to check is inside the artifact body rather than the artifact's manifest timestamp:
+
+```yaml
+- type: evidencepack/pentest-report@v1
+  metadata_conditions:
+    all:
+      - path: $.metadata.test_date
+        op: max_age_days
+        value: 365
 ```
 
 ## Output

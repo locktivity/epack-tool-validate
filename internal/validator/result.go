@@ -87,6 +87,6 @@ type ConditionCheck struct {
 
 // ExpectedValue represents a structured expected value with operator context.
 type ExpectedValue struct {
-	Op    string `json:"op"`              // Operator: "eq", "neq", "gt", "gte", "lt", "lte", "exists", "not_exists"
+	Op    string `json:"op"`              // Operator: "eq", "neq", "gt", "gte", "lt", "lte", "exists", "not_exists", "max_age_days"
 	Value any    `json:"value,omitempty"` // Expected value (omitted for exists/not_exists)
 }

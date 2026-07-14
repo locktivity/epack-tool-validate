@@ -3,6 +3,7 @@ package condition
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestOperator_String(t *testing.T) {
@@ -18,6 +19,7 @@ func TestOperator_String(t *testing.T) {
 		{OpLte, "lte"},
 		{OpExists, "exists"},
 		{OpNotExists, "not_exists"},
+		{OpMaxAgeDays, "max_age_days"},
 		{OpInvalid, "invalid"},
 		{Operator(99), "invalid"},
 	}
@@ -46,6 +48,7 @@ func TestParseOperator(t *testing.T) {
 		{"lte", OpLte, false},
 		{"exists", OpExists, false},
 		{"not_exists", OpNotExists, false},
+		{"max_age_days", OpMaxAgeDays, false},
 
 		// Symbol aliases
 		{"==", OpEq, false},
@@ -212,6 +215,63 @@ func TestOperator_Apply(t *testing.T) {
 	t.Run("invalid operator", func(t *testing.T) {
 		if OpInvalid.Apply(100, 100) {
 			t.Error("invalid operator should return false")
+		}
+	})
+}
+
+func TestOperator_ApplyAt_MaxAgeDays(t *testing.T) {
+	now := time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name     string
+		actual   any
+		expected any
+		want     bool
+	}{
+		{"date within limit", "2024-01-15", 365, true},
+		{"date exactly at limit", "2023-06-16", 365, true},
+		{"date one day past limit", "2023-06-15", 365, false},
+		{"date today", "2024-06-15", 365, true},
+		{"date one day in future (timezone tolerance)", "2024-06-16", 365, true},
+		{"date two days in future", "2024-06-17", 365, false},
+		{"rfc3339 within limit", "2024-06-14T12:00:00Z", 365, true},
+		{"rfc3339 exactly at limit", "2023-06-16T12:00:00Z", 365, true},
+		{"rfc3339 one second past limit", "2023-06-16T11:59:59Z", 365, false},
+		{"rfc3339 in future fails (no tolerance)", "2024-06-15T12:00:01Z", 365, false},
+		{"rfc3339 with offset", "2024-06-15T13:00:00+02:00", 365, true},
+		{"whitespace around date", " 2024-01-15 ", 365, true},
+		{"malformed date", "June 15, 2024", 365, false},
+		{"empty string", "", 365, false},
+		{"non-string actual", 20240115, 365, false},
+		{"nil actual", nil, 365, false},
+		{"zero days allows today only", "2024-06-15", 0, true},
+		{"zero days rejects yesterday", "2024-06-14", 0, false},
+		{"float days truncate", "2024-06-14", 1.9, true},
+		{"nil expected", "2024-01-15", nil, false},
+		{"string expected", "2024-01-15", "365", false},
+		{"negative expected", "2024-01-15", -1, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := OpMaxAgeDays.ApplyAt(tt.actual, tt.expected, now); got != tt.want {
+				t.Errorf("ApplyAt(%v, %v) = %v, want %v", tt.actual, tt.expected, got, tt.want)
+			}
+		})
+	}
+
+	t.Run("Apply without clock returns false", func(t *testing.T) {
+		if OpMaxAgeDays.Apply("2024-06-15", 365) {
+			t.Error("Apply(max_age_days) should be false; it has no clock")
+		}
+	})
+
+	t.Run("ApplyAt delegates non-time operators to Apply", func(t *testing.T) {
+		if !OpEq.ApplyAt(100, 100, now) {
+			t.Error("ApplyAt should delegate eq to Apply")
+		}
+		if OpGt.ApplyAt(50, 100, now) {
+			t.Error("ApplyAt should delegate gt to Apply")
 		}
 	})
 }

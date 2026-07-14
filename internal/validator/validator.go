@@ -181,7 +181,7 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 		// All clauses must match AND have no severity to pass
 		// For all_of mode, don't mark any check as selected (all matter equally)
 		var highestSeverity string
-		for i, o := range outcomes {
+		for _, o := range outcomes {
 			if !o.Matched {
 				result.Status = "fail"
 				result.Severity = "high"
@@ -197,7 +197,6 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 				result.Delta = o.ConditionDelta
 				// For all_of, the first failing check is technically the "blocker"
 				// but we don't mark it as selected since all checks matter
-				_ = i // silence unused variable
 				result.Checks = buildCheckResults(req, outcomes, -1) // -1 = no selected
 				return result
 			}
@@ -329,7 +328,7 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 		}
 
 		// Artifact is fresh (or no freshness requirement) - evaluate conditions
-		condResult := evaluateConditionsWithDetails(clause.Conditions, artifact.Body)
+		condResult := evaluateConditionsWithDetailsAt(clause.Conditions, artifact.Body, ctx.Now())
 		if condResult.Passed {
 			outcome := ClauseOutcome{
 				Matched:         true,
@@ -434,13 +433,17 @@ type ConditionResult struct {
 // evaluateConditionsWithDetails evaluates all conditions and returns both pass/fail status
 // and the first condition's details for display (useful for graduated checks).
 func evaluateConditionsWithDetails(conditions []compiled.CompiledCondition, body any) ConditionResult {
+	return evaluateConditionsWithDetailsAt(conditions, body, time.Now())
+}
+
+func evaluateConditionsWithDetailsAt(conditions []compiled.CompiledCondition, body any, now time.Time) ConditionResult {
 	if len(conditions) == 0 {
 		return ConditionResult{Passed: true, Detail: nil}
 	}
 
 	// Always capture the first condition's details for display
 	firstCond := conditions[0]
-	firstPassed, firstDetail := evaluateSingleCondition(&firstCond, body)
+	firstPassed, firstDetail := evaluateSingleConditionAt(&firstCond, body, now)
 	checks := []ConditionCheck{conditionCheckFromFailure(firstDetail, firstPassed)}
 
 	// If first condition failed, return immediately
@@ -451,7 +454,7 @@ func evaluateConditionsWithDetails(conditions []compiled.CompiledCondition, body
 	// Evaluate remaining conditions
 	for i := 1; i < len(conditions); i++ {
 		cond := &conditions[i]
-		passed, detail := evaluateSingleCondition(cond, body)
+		passed, detail := evaluateSingleConditionAt(cond, body, now)
 		checks = append(checks, conditionCheckFromFailure(detail, passed))
 		if !passed {
 			return ConditionResult{Passed: false, Detail: detail, Checks: checks}
@@ -464,17 +467,25 @@ func evaluateConditionsWithDetails(conditions []compiled.CompiledCondition, body
 
 // evaluateSingleCondition evaluates one condition with cardinality support.
 func evaluateSingleCondition(cond *compiled.CompiledCondition, body any) (bool, *ConditionFailure) {
+	return evaluateSingleConditionAt(cond, body, time.Now())
+}
+
+func evaluateSingleConditionAt(cond *compiled.CompiledCondition, body any, now time.Time) (bool, *ConditionFailure) {
 	// Handle single-value (default) cardinality
 	if cond.Cardinality == compiled.CardinalitySingle {
-		return evaluateSingleValueCondition(cond, body)
+		return evaluateSingleValueConditionAt(cond, body, now)
 	}
 
 	// Handle multi-value cardinality
-	return evaluateMultiValueCondition(cond, body)
+	return evaluateMultiValueConditionAt(cond, body, now)
 }
 
 // evaluateSingleValueCondition handles the default single-value case.
 func evaluateSingleValueCondition(cond *compiled.CompiledCondition, body any) (bool, *ConditionFailure) {
+	return evaluateSingleValueConditionAt(cond, body, time.Now())
+}
+
+func evaluateSingleValueConditionAt(cond *compiled.CompiledCondition, body any, now time.Time) (bool, *ConditionFailure) {
 	actual, err := condition.EvaluateJSONPath(cond.Expr, body)
 
 	if err != nil {
@@ -485,7 +496,7 @@ func evaluateSingleValueCondition(cond *compiled.CompiledCondition, body any) (b
 		}
 	}
 
-	passed := cond.Op.Apply(actual, cond.Expected)
+	passed := cond.Op.ApplyAt(actual, cond.Expected, now)
 	detail := &ConditionFailure{
 		Path:     cond.Path,
 		Expected: &ExpectedValue{Op: cond.Op.String(), Value: cond.Expected},
@@ -505,6 +516,10 @@ func evaluateSingleValueCondition(cond *compiled.CompiledCondition, body any) (b
 
 // evaluateMultiValueCondition handles cardinality: all/any/none.
 func evaluateMultiValueCondition(cond *compiled.CompiledCondition, body any) (bool, *ConditionFailure) {
+	return evaluateMultiValueConditionAt(cond, body, time.Now())
+}
+
+func evaluateMultiValueConditionAt(cond *compiled.CompiledCondition, body any, now time.Time) (bool, *ConditionFailure) {
 	values := condition.EvaluateJSONPathMulti(cond.Expr, body)
 
 	// Special handling for exists/not_exists operators with cardinality.
@@ -531,7 +546,7 @@ func evaluateMultiValueCondition(cond *compiled.CompiledCondition, body any) (bo
 	var firstPassValue any
 
 	for _, val := range values {
-		if cond.Op.Apply(val, cond.Expected) {
+		if cond.Op.ApplyAt(val, cond.Expected, now) {
 			passCount++
 			if firstPassValue == nil {
 				firstPassValue = val

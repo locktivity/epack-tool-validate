@@ -914,6 +914,222 @@ func TestValidate_Freshness_MissingTimestamp(t *testing.T) {
 	}
 }
 
+func TestValidate_MetadataDateWithinLastDays_Pass(t *testing.T) {
+	ctx := makeTestContext()
+	pack := &PackIndex{
+		BySchema: map[string][]IndexedArtifact{
+			"evidencepack/pentest-report@v1": {
+				{
+					Path:   "artifacts/documents/doc-1/metadata.json",
+					Schema: "evidencepack/pentest-report@v1",
+					Body: map[string]any{
+						"metadata": map[string]any{
+							"test_date": "2024-01-15",
+						},
+					},
+				},
+			},
+		},
+		PackDigest: "sha256:abc123",
+	}
+
+	v := New()
+	profile := &compiled.CompiledProfile{
+		ID:      "test-profile",
+		Name:    "Test Profile",
+		Version: "1.0.0",
+		Requirements: []compiled.CompiledRequirement{
+			{
+				ID:   "DOC-001",
+				Name: "Recent penetration test",
+				Mode: compiled.ClauseModeAny,
+				Clauses: []compiled.CompiledClause{
+					{
+						Schema:     "evidencepack/pentest-report@v1",
+						Conditions: []compiled.CompiledCondition{makeCompiledCondition("$.metadata.test_date", "max_age_days", 365)},
+						Origin:     compiled.Origin{RequirementID: "DOC-001", ClauseIndex: 0},
+					},
+				},
+			},
+		},
+	}
+
+	result := v.Validate(ctx, profile, pack, "")
+
+	if result.Status != "pass" {
+		t.Errorf("Status = %q, want %q", result.Status, "pass")
+	}
+	req := result.Requirements[0]
+	if req.Path != "$.metadata.test_date" {
+		t.Errorf("Path = %q, want %q", req.Path, "$.metadata.test_date")
+	}
+	if req.Actual != "2024-01-15" {
+		t.Errorf("Actual = %v, want %q", req.Actual, "2024-01-15")
+	}
+}
+
+func TestValidate_MetadataDateWithinLastDays_TooOld(t *testing.T) {
+	ctx := makeTestContext()
+	pack := &PackIndex{
+		BySchema: map[string][]IndexedArtifact{
+			"evidencepack/pentest-report@v1": {
+				{
+					Path:   "artifacts/documents/doc-1/metadata.json",
+					Schema: "evidencepack/pentest-report@v1",
+					Body: map[string]any{
+						"metadata": map[string]any{
+							"test_date": "2023-01-15",
+						},
+					},
+				},
+			},
+		},
+		PackDigest: "sha256:abc123",
+	}
+
+	v := New()
+	profile := &compiled.CompiledProfile{
+		ID:      "test-profile",
+		Name:    "Test Profile",
+		Version: "1.0.0",
+		Requirements: []compiled.CompiledRequirement{
+			{
+				ID:   "DOC-001",
+				Name: "Recent penetration test",
+				Mode: compiled.ClauseModeAny,
+				Clauses: []compiled.CompiledClause{
+					{
+						Schema:     "evidencepack/pentest-report@v1",
+						Conditions: []compiled.CompiledCondition{makeCompiledCondition("$.metadata.test_date", "max_age_days", 365)},
+						Origin:     compiled.Origin{RequirementID: "DOC-001", ClauseIndex: 0},
+					},
+				},
+			},
+		},
+	}
+
+	result := v.Validate(ctx, profile, pack, "")
+
+	if result.Status != "fail" {
+		t.Errorf("Status = %q, want %q", result.Status, "fail")
+	}
+	req := result.Requirements[0]
+	if req.Path != "$.metadata.test_date" {
+		t.Errorf("Path = %q, want %q", req.Path, "$.metadata.test_date")
+	}
+	if req.Expected == nil || req.Expected.Op != "max_age_days" || req.Expected.Value != 365 {
+		t.Errorf("Expected = %+v, want max_age_days 365", req.Expected)
+	}
+	if req.Actual != "2023-01-15" {
+		t.Errorf("Actual = %v, want %q", req.Actual, "2023-01-15")
+	}
+}
+
+func TestValidate_MetadataDateWithinLastDays_FutureDateFails(t *testing.T) {
+	ctx := makeTestContext()
+	cond := makeCompiledCondition("$.metadata.test_date", "max_age_days", 365)
+	body := map[string]any{
+		"metadata": map[string]any{
+			"test_date": "2024-06-17",
+		},
+	}
+
+	result := evaluateConditionsWithDetailsAt([]compiled.CompiledCondition{cond}, body, ctx.Now())
+
+	if result.Passed {
+		t.Error("future dates should fail max_age_days")
+	}
+	if result.Detail == nil || result.Detail.Actual != "2024-06-17" {
+		t.Errorf("Detail = %+v, want actual future date", result.Detail)
+	}
+}
+
+func TestValidate_MetadataDateWithinLastDays_TomorrowPassesTolerance(t *testing.T) {
+	ctx := makeTestContext()
+	cond := makeCompiledCondition("$.metadata.test_date", "max_age_days", 365)
+	body := map[string]any{
+		"metadata": map[string]any{
+			"test_date": "2024-06-16",
+		},
+	}
+
+	result := evaluateConditionsWithDetailsAt([]compiled.CompiledCondition{cond}, body, ctx.Now())
+
+	if !result.Passed {
+		t.Error("date-only values one day ahead should pass (timezone tolerance)")
+	}
+}
+
+func TestValidate_MetadataDateWithinLastDays_RFC3339Timestamp(t *testing.T) {
+	ctx := makeTestContext()
+	cond := makeCompiledCondition("$.metadata.completed_at", "max_age_days", 30)
+
+	fresh := map[string]any{
+		"metadata": map[string]any{"completed_at": "2024-06-01T09:30:00Z"},
+	}
+	result := evaluateConditionsWithDetailsAt([]compiled.CompiledCondition{cond}, fresh, ctx.Now())
+	if !result.Passed {
+		t.Error("RFC3339 timestamp 14 days old should pass max_age_days 30")
+	}
+
+	stale := map[string]any{
+		"metadata": map[string]any{"completed_at": "2024-05-01T09:30:00Z"},
+	}
+	result = evaluateConditionsWithDetailsAt([]compiled.CompiledCondition{cond}, stale, ctx.Now())
+	if result.Passed {
+		t.Error("RFC3339 timestamp 45 days old should fail max_age_days 30")
+	}
+}
+
+func TestValidate_MetadataDateWithinLastDays_CardinalityAll(t *testing.T) {
+	ctx := makeTestContext()
+	cond := makeCompiledConditionWithCardinality("$.scans[*].date", "max_age_days", 90, compiled.CardinalityAll)
+
+	allFresh := map[string]any{
+		"scans": []any{
+			map[string]any{"date": "2024-06-01"},
+			map[string]any{"date": "2024-05-15"},
+		},
+	}
+	passed, _ := evaluateSingleConditionAt(&cond, allFresh, ctx.Now())
+	if !passed {
+		t.Error("all scan dates within 90 days should pass cardinality:all")
+	}
+
+	oneStale := map[string]any{
+		"scans": []any{
+			map[string]any{"date": "2024-06-01"},
+			map[string]any{"date": "2023-12-01"},
+		},
+	}
+	passed, detail := evaluateSingleConditionAt(&cond, oneStale, ctx.Now())
+	if passed {
+		t.Error("one stale scan date should fail cardinality:all")
+	}
+	if detail == nil || detail.Actual != "2023-12-01" {
+		t.Errorf("Detail = %+v, want failing value 2023-12-01", detail)
+	}
+}
+
+func TestValidate_MetadataDateWithinLastDays_MalformedDateFails(t *testing.T) {
+	ctx := makeTestContext()
+	cond := makeCompiledCondition("$.metadata.test_date", "max_age_days", 365)
+	body := map[string]any{
+		"metadata": map[string]any{
+			"test_date": "June 15, 2024",
+		},
+	}
+
+	result := evaluateConditionsWithDetailsAt([]compiled.CompiledCondition{cond}, body, ctx.Now())
+
+	if result.Passed {
+		t.Error("malformed dates should fail max_age_days")
+	}
+	if result.Detail == nil || result.Detail.Expected.Op != "max_age_days" {
+		t.Errorf("Detail = %+v, want max_age_days failure", result.Detail)
+	}
+}
+
 func TestValidate_NoArtifactMatch(t *testing.T) {
 	ctx := makeTestContext()
 	pack := makeTestPackIndex()

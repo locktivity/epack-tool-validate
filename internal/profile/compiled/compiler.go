@@ -179,6 +179,16 @@ func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx i
 		)
 	}
 
+	if op == condition.OpMaxAgeDays {
+		if maxDays, numOK := condition.NormalizeNumeric(cond.Value); !numOK || maxDays < 0 {
+			return nil, diagnostic.Errorf(
+				diagnostic.CodeInvalidFieldType, loc,
+				"requirement %s, clause %d, condition %d: max_age_days requires a non-negative numeric value, got %v",
+				reqID, clauseIdx, condIdx, cond.Value,
+			)
+		}
+	}
+
 	// Parse cardinality
 	cardinality, ok := ValidCardinalities[cond.Cardinality]
 	if !ok {

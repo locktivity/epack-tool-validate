@@ -89,9 +89,11 @@ requirements:
 | Field | Type | Description |
 |-------|------|-------------|
 | `path` | string | JSONPath expression (e.g., `$.mfa_coverage`) |
-| `op` | string | Operator: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `exists`, `not_exists` |
+| `op` | string | Operator: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `exists`, `not_exists`, `max_age_days` |
 | `value` | any | Expected value (not required for `exists`/`not_exists`) |
 | `cardinality` | string | For multi-value paths: `all`, `any`, `none` (empty = single value required) |
+
+`max_age_days` expects `value` to be a non-negative number of days (validated at profile compile time) and the JSONPath value to be an ISO date (`YYYY-MM-DD`) or RFC3339 timestamp. It passes when the date is no older than the configured number of days and not in the future. Date-only values carry no timezone, so they are allowed up to one day in the future; RFC3339 timestamps must not be in the future at all.
 
 ### Supported JSONPath Syntax
 

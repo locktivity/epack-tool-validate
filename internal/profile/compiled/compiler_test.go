@@ -336,6 +336,48 @@ func TestCompile_ConditionErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("max_age_days value validation", func(t *testing.T) {
+		makeProfile := func(value any) *raw.RawProfile {
+			return &raw.RawProfile{
+				ID:   "test",
+				Name: "Test",
+				Requirements: []raw.RawRequirement{
+					{
+						ID:   "REQ-001",
+						Name: "Test",
+						SatisfiedBy: raw.RawSatisfiedBy{
+							AnyOf: []raw.RawClause{
+								{
+									Type: "test@v1",
+									MetadataConditions: &raw.RawConditions{
+										All: []raw.RawCondition{
+											{Path: "$.metadata.test_date", Op: "max_age_days", Value: value},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+		}
+
+		if _, err := Compile(makeProfile(365), "test.yaml"); err != nil {
+			t.Errorf("Compile() with numeric value: unexpected error %v", err)
+		}
+
+		rejected := map[string]any{
+			"missing":  nil,
+			"string":   "365",
+			"negative": -1,
+		}
+		for name, value := range rejected {
+			if _, err := Compile(makeProfile(value), "test.yaml"); err == nil {
+				t.Errorf("Compile() should reject max_age_days with %s value", name)
+			}
+		}
+	})
+
 	t.Run("invalid JSONPath", func(t *testing.T) {
 		profile := &raw.RawProfile{
 			ID:   "test",
