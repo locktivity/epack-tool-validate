@@ -132,6 +132,23 @@ Use `max_age_days` when the date to check is inside the artifact body rather tha
         value: 365
 ```
 
+## Unknown Outcomes
+
+Evaluation is three-valued. A value that is absent from an artifact (a missing
+field, an explicit null, an array element without the field, or an empty
+result set) cannot pass or fail a comparison: the condition, its clause, and
+the requirement score as `unknown` with `failure_kind:
+"insufficient_evidence"`, never as a pass or a graded failure. The presence
+operators (`exists`, `not_exists`) stay two-valued, since absence is exactly
+what they test.
+
+Combination follows the evidence: in `any_of`, a definite pass wins and any
+unknown clause otherwise blocks a verdict; in `all_of`, a definite miss fails
+the requirement even when other clauses are unknown. The overall status rolls
+up as fail over unknown over pass, and `summary.unknown` counts the
+requirements that could not be scored. Unknown requirements never appear in
+`key_failures`.
+
 ## Output
 
 The tool outputs a `validation.json` file containing:

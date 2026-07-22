@@ -40,10 +40,18 @@ func (v *Validator) Validate(ctx *Context, profile *compiled.CompiledProfile, pa
 		reqResult := v.evaluateRequirement(ctx, &req, pack)
 		result.Requirements = append(result.Requirements, reqResult)
 
-		// Update summary
-		if reqResult.Status == "pass" {
+		// Update summary. Any failure makes the overall status "fail"; with
+		// no failures, any unknown makes it "unknown" (the pack cannot be
+		// asserted to pass on absent evidence).
+		switch reqResult.Status {
+		case "pass":
 			result.Summary.Passed++
-		} else {
+		case "unknown":
+			result.Summary.Unknown++
+			if result.Status == "pass" {
+				result.Status = "unknown"
+			}
+		default:
 			result.Status = "fail"
 			if reqResult.FailureKind == "missing" {
 				result.Summary.Missing++
@@ -64,11 +72,14 @@ func (v *Validator) Validate(ctx *Context, profile *compiled.CompiledProfile, pa
 		// Update category summary
 		if req.Category != "" {
 			cat := result.ByCategory[req.Category]
-			if reqResult.Status == "pass" {
+			switch {
+			case reqResult.Status == "pass":
 				cat.Passed++
-			} else if reqResult.FailureKind == "missing" {
+			case reqResult.Status == "unknown":
+				cat.Unknown++
+			case reqResult.FailureKind == "missing":
 				cat.Missing++
-			} else {
+			default:
 				cat.Failed++
 			}
 			result.ByCategory[req.Category] = cat
@@ -107,17 +118,39 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 			firstClauseCondCount = len(req.Clauses[0].Conditions)
 		}
 
+		// A definite pass wins outright: any_of is satisfied regardless of
+		// what the other clauses did.
+		for i, o := range outcomes {
+			if o.Matched && o.Severity == "" {
+				selectedClauseIndex = i // This clause determined the outcome
+				result.Status = "pass"
+				populatePassDetailsFromOutcome(&result, o)
+				result.Checks = buildCheckResults(req, outcomes, selectedClauseIndex)
+				return result
+			}
+		}
+
+		// With no definite pass, any unknown clause blocks a verdict: the
+		// absent evidence might have satisfied the requirement, so neither a
+		// graded failure nor the no-clause-matched default can be asserted.
+		for i, o := range outcomes {
+			if o.Unknown {
+				result.Status = "unknown"
+				result.FailureKind = failureKindForOutcome(o)
+				result.Message = o.FailureDetail
+				result.Path = o.ConditionPath
+				result.Expected = o.ConditionExpected
+				result.Actual = o.ConditionActual
+				result.Delta = o.ConditionDelta
+				result.Artifact = o.ArtifactPath
+				result.Checks = buildCheckResults(req, outcomes, i)
+				return result
+			}
+		}
+
 		// First matching clause wins - its severity determines outcome
 		for i, o := range outcomes {
 			if o.Matched {
-				if o.Severity == "" {
-					// No severity = requirement PASSES
-					selectedClauseIndex = i // This clause determined the outcome
-					result.Status = "pass"
-					populatePassDetailsFromOutcome(&result, o)
-					result.Checks = buildCheckResults(req, outcomes, selectedClauseIndex)
-					return result
-				}
 				// Has severity = requirement FAILS with that severity
 				// This is a graduated failure - show what's needed to fully pass
 				result.Status = "fail"
@@ -180,9 +213,11 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 	case compiled.ClauseModeAll:
 		// All clauses must match AND have no severity to pass
 		// For all_of mode, don't mark any check as selected (all matter equally)
+		// A definite non-match decides failure even when other clauses are
+		// unknown: all_of needs every clause, and one definitively missed.
 		var highestSeverity string
 		for _, o := range outcomes {
-			if !o.Matched {
+			if !o.Matched && !o.Unknown {
 				result.Status = "fail"
 				result.Severity = "high"
 				result.FailureKind = failureKindForOutcome(o)
@@ -202,6 +237,24 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 			}
 			if o.Severity != "" {
 				highestSeverity = compiled.MaxSeverity(highestSeverity, o.Severity)
+			}
+		}
+		// No definite miss; an unknown clause means the requirement cannot be
+		// scored (it might have matched or missed).
+		for _, o := range outcomes {
+			if o.Unknown {
+				result.Status = "unknown"
+				result.FailureKind = failureKindForOutcome(o)
+				result.Message = o.FailureDetail
+				if o.ArtifactPath != "" {
+					result.Artifact = o.ArtifactPath
+				}
+				result.Path = o.ConditionPath
+				result.Expected = o.ConditionExpected
+				result.Actual = o.ConditionActual
+				result.Delta = o.ConditionDelta
+				result.Checks = buildCheckResults(req, outcomes, -1)
+				return result
 			}
 		}
 		if highestSeverity != "" {
@@ -265,6 +318,9 @@ func checkStatusForOutcome(outcome ClauseOutcome) string {
 		}
 		return "fail"
 	}
+	if outcome.Unknown {
+		return "unknown"
+	}
 
 	switch outcome.FailureKind {
 	case FailureKindNoMatch:
@@ -288,6 +344,8 @@ func failureKindForOutcome(outcome ClauseOutcome) string {
 		return "freshness_missing"
 	case FailureKindCondition:
 		return "condition"
+	case FailureKindInsufficientEvidence:
+		return "insufficient_evidence"
 	default:
 		return ""
 	}
@@ -305,6 +363,7 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 
 	// Track what we've seen for accurate failure reporting
 	var freshConditionFailure *ClauseOutcome // Fresh artifact that failed conditions
+	var insufficientEvidence *ClauseOutcome  // Fresh artifact whose evidence was absent
 	var staleArtifact *IndexedArtifact       // First stale artifact found
 	var missingTimestamp bool                // Any artifact missing timestamp
 
@@ -329,7 +388,8 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 
 		// Artifact is fresh (or no freshness requirement) - evaluate conditions
 		condResult := evaluateConditionsWithDetailsAt(clause.Conditions, artifact.Body, ctx.Now())
-		if condResult.Passed {
+		switch condResult.Verdict {
+		case VerdictTrue:
 			outcome := ClauseOutcome{
 				Matched:         true,
 				Severity:        clause.Severity,
@@ -344,25 +404,52 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 				outcome.ConditionDelta = condResult.Detail.Delta
 			}
 			return outcome
-		}
 
-		// Fresh artifact failed conditions - track for reporting
-		if freshConditionFailure == nil {
-			freshConditionFailure = &ClauseOutcome{
-				Matched:         false,
-				FailureKind:     FailureKindCondition,
-				FailureDetail:   "conditions not satisfied",
-				ArtifactPath:    artifact.Path,
-				Origin:          clause.Origin,
-				ConditionChecks: condResult.Checks,
+		case VerdictUnknown:
+			if insufficientEvidence == nil {
+				insufficientEvidence = &ClauseOutcome{
+					Unknown:         true,
+					FailureKind:     FailureKindInsufficientEvidence,
+					FailureDetail:   "insufficient evidence: referenced value absent from artifact",
+					ArtifactPath:    artifact.Path,
+					Origin:          clause.Origin,
+					ConditionChecks: condResult.Checks,
+				}
+				if condResult.Detail != nil {
+					insufficientEvidence.FailureDetail = fmt.Sprintf("insufficient evidence: %s absent from artifact", condResult.Detail.Path)
+					insufficientEvidence.ConditionPath = condResult.Detail.Path
+					insufficientEvidence.ConditionExpected = condResult.Detail.Expected
+					insufficientEvidence.ConditionActual = condResult.Detail.Actual
+					insufficientEvidence.ConditionDelta = condResult.Detail.Delta
+				}
 			}
-			if condResult.Detail != nil {
-				freshConditionFailure.ConditionPath = condResult.Detail.Path
-				freshConditionFailure.ConditionExpected = condResult.Detail.Expected
-				freshConditionFailure.ConditionActual = condResult.Detail.Actual
-				freshConditionFailure.ConditionDelta = condResult.Detail.Delta
+
+		default:
+			// Fresh artifact failed conditions - track for reporting
+			if freshConditionFailure == nil {
+				freshConditionFailure = &ClauseOutcome{
+					Matched:         false,
+					FailureKind:     FailureKindCondition,
+					FailureDetail:   "conditions not satisfied",
+					ArtifactPath:    artifact.Path,
+					Origin:          clause.Origin,
+					ConditionChecks: condResult.Checks,
+				}
+				if condResult.Detail != nil {
+					freshConditionFailure.ConditionPath = condResult.Detail.Path
+					freshConditionFailure.ConditionExpected = condResult.Detail.Expected
+					freshConditionFailure.ConditionActual = condResult.Detail.Actual
+					freshConditionFailure.ConditionDelta = condResult.Detail.Delta
+				}
 			}
 		}
+	}
+
+	// No artifact matched. An artifact with absent evidence outranks a
+	// definite condition failure on another artifact: the absent one might
+	// have satisfied the clause, so the clause cannot be scored either way.
+	if insufficientEvidence != nil {
+		return *insufficientEvidence
 	}
 
 	// Report failure - prioritize condition failures over freshness
@@ -401,9 +488,9 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 	}
 }
 
-func conditionCheckFromFailure(detail *ConditionFailure, passed bool) ConditionCheck {
+func conditionCheckFromFailure(detail *ConditionFailure, verdict Verdict) ConditionCheck {
 	if detail == nil {
-		return ConditionCheck{Passed: passed}
+		return ConditionCheck{Passed: verdict == VerdictTrue, Unknown: verdict == VerdictUnknown}
 	}
 
 	return ConditionCheck{
@@ -411,7 +498,8 @@ func conditionCheckFromFailure(detail *ConditionFailure, passed bool) ConditionC
 		Expected: detail.Expected,
 		Actual:   detail.Actual,
 		Delta:    detail.Delta,
-		Passed:   passed,
+		Passed:   verdict == VerdictTrue,
+		Unknown:  verdict == VerdictUnknown,
 	}
 }
 
@@ -423,54 +511,66 @@ type ConditionFailure struct {
 	Delta    *float64       // Delta for numeric comparisons (actual - expected)
 }
 
-// ConditionResult captures details about condition evaluation.
+// ConditionResult captures details about condition evaluation. The condition
+// group is a three-valued AND: any definite false decides false, otherwise any
+// unknown decides unknown, otherwise true.
 type ConditionResult struct {
-	Passed bool
-	Detail *ConditionFailure // Always populated if there are conditions
-	Checks []ConditionCheck
+	Verdict Verdict
+	Detail  *ConditionFailure // Always populated if there are conditions
+	Checks  []ConditionCheck
 }
 
-// evaluateConditionsWithDetails evaluates all conditions and returns both pass/fail status
-// and the first condition's details for display (useful for graduated checks).
+// evaluateConditionsWithDetails evaluates all conditions and returns both the
+// verdict and the first condition's details for display (useful for graduated checks).
 func evaluateConditionsWithDetails(conditions []compiled.CompiledCondition, body any) ConditionResult {
 	return evaluateConditionsWithDetailsAt(conditions, body, time.Now())
 }
 
 func evaluateConditionsWithDetailsAt(conditions []compiled.CompiledCondition, body any, now time.Time) ConditionResult {
 	if len(conditions) == 0 {
-		return ConditionResult{Passed: true, Detail: nil}
+		return ConditionResult{Verdict: VerdictTrue, Detail: nil}
 	}
 
 	// Always capture the first condition's details for display
 	firstCond := conditions[0]
-	firstPassed, firstDetail := evaluateSingleConditionAt(&firstCond, body, now)
-	checks := []ConditionCheck{conditionCheckFromFailure(firstDetail, firstPassed)}
+	firstVerdict, firstDetail := evaluateSingleConditionAt(&firstCond, body, now)
+	checks := []ConditionCheck{conditionCheckFromFailure(firstDetail, firstVerdict)}
 
-	// If first condition failed, return immediately
-	if !firstPassed {
-		return ConditionResult{Passed: false, Detail: firstDetail, Checks: checks}
+	// A definite false decides immediately; an unknown is recorded but later
+	// conditions still run, since a definite false among them must win.
+	if firstVerdict == VerdictFalse {
+		return ConditionResult{Verdict: VerdictFalse, Detail: firstDetail, Checks: checks}
 	}
+	unknownDetail := firstDetail
+	sawUnknown := firstVerdict == VerdictUnknown
 
-	// Evaluate remaining conditions
 	for i := 1; i < len(conditions); i++ {
 		cond := &conditions[i]
-		passed, detail := evaluateSingleConditionAt(cond, body, now)
-		checks = append(checks, conditionCheckFromFailure(detail, passed))
-		if !passed {
-			return ConditionResult{Passed: false, Detail: detail, Checks: checks}
+		verdict, detail := evaluateSingleConditionAt(cond, body, now)
+		checks = append(checks, conditionCheckFromFailure(detail, verdict))
+		if verdict == VerdictFalse {
+			return ConditionResult{Verdict: VerdictFalse, Detail: detail, Checks: checks}
+		}
+		if verdict == VerdictUnknown && !sawUnknown {
+			sawUnknown = true
+			unknownDetail = detail
 		}
 	}
 
+	if sawUnknown {
+		return ConditionResult{Verdict: VerdictUnknown, Detail: unknownDetail, Checks: checks}
+	}
+
 	// All conditions passed - return first condition's details for graduated checks
-	return ConditionResult{Passed: true, Detail: firstDetail, Checks: checks}
+	return ConditionResult{Verdict: VerdictTrue, Detail: firstDetail, Checks: checks}
 }
 
 // evaluateSingleCondition evaluates one condition with cardinality support.
-func evaluateSingleCondition(cond *compiled.CompiledCondition, body any) (bool, *ConditionFailure) {
+func evaluateSingleCondition(cond *compiled.CompiledCondition, body any) (Verdict, *ConditionFailure) {
 	return evaluateSingleConditionAt(cond, body, time.Now())
 }
 
-func evaluateSingleConditionAt(cond *compiled.CompiledCondition, body any, now time.Time) (bool, *ConditionFailure) {
+func evaluateSingleConditionAt(cond *compiled.CompiledCondition, body any, now time.Time) (Verdict, *ConditionFailure) {
 	// Handle single-value (default) cardinality
 	if cond.Cardinality == compiled.CardinalitySingle {
 		return evaluateSingleValueConditionAt(cond, body, now)
@@ -480,28 +580,43 @@ func evaluateSingleConditionAt(cond *compiled.CompiledCondition, body any, now t
 	return evaluateMultiValueConditionAt(cond, body, now)
 }
 
+// presenceOp reports whether the operator reasons about presence itself.
+// Presence operators stay two-valued: an absent value is exactly what they
+// test for. Every other operator yields VerdictUnknown on an absent value,
+// since a comparison against nothing is not evidence in either direction.
+func presenceOp(op condition.Operator) bool {
+	return op == condition.OpExists || op == condition.OpNotExists
+}
+
 // evaluateSingleValueCondition handles the default single-value case.
-func evaluateSingleValueCondition(cond *compiled.CompiledCondition, body any) (bool, *ConditionFailure) {
+func evaluateSingleValueCondition(cond *compiled.CompiledCondition, body any) (Verdict, *ConditionFailure) {
 	return evaluateSingleValueConditionAt(cond, body, time.Now())
 }
 
-func evaluateSingleValueConditionAt(cond *compiled.CompiledCondition, body any, now time.Time) (bool, *ConditionFailure) {
+func evaluateSingleValueConditionAt(cond *compiled.CompiledCondition, body any, now time.Time) (Verdict, *ConditionFailure) {
 	actual, err := condition.EvaluateJSONPath(cond.Expr, body)
 
 	if err != nil {
-		return false, &ConditionFailure{
+		return VerdictFalse, &ConditionFailure{
 			Path:     cond.Path,
 			Expected: &ExpectedValue{Op: cond.Op.String(), Value: cond.Expected},
 			Actual:   nil,
 		}
 	}
 
-	passed := cond.Op.ApplyAt(actual, cond.Expected, now)
 	detail := &ConditionFailure{
 		Path:     cond.Path,
 		Expected: &ExpectedValue{Op: cond.Op.String(), Value: cond.Expected},
 		Actual:   actual,
 	}
+
+	// An absent (or null) value cannot pass or fail a comparison; only the
+	// presence operators score it.
+	if actual == nil && !presenceOp(cond.Op) {
+		return VerdictUnknown, detail
+	}
+
+	passed := cond.Op.ApplyAt(actual, cond.Expected, now)
 
 	// Calculate delta for numeric comparisons
 	if actualNum, aOK := condition.NormalizeNumeric(actual); aOK {
@@ -511,15 +626,18 @@ func evaluateSingleValueConditionAt(cond *compiled.CompiledCondition, body any, 
 		}
 	}
 
-	return passed, detail
+	if passed {
+		return VerdictTrue, detail
+	}
+	return VerdictFalse, detail
 }
 
 // evaluateMultiValueCondition handles cardinality: all/any/none.
-func evaluateMultiValueCondition(cond *compiled.CompiledCondition, body any) (bool, *ConditionFailure) {
+func evaluateMultiValueCondition(cond *compiled.CompiledCondition, body any) (Verdict, *ConditionFailure) {
 	return evaluateMultiValueConditionAt(cond, body, time.Now())
 }
 
-func evaluateMultiValueConditionAt(cond *compiled.CompiledCondition, body any, now time.Time) (bool, *ConditionFailure) {
+func evaluateMultiValueConditionAt(cond *compiled.CompiledCondition, body any, now time.Time) (Verdict, *ConditionFailure) {
 	values := condition.EvaluateJSONPathMulti(cond.Expr, body)
 
 	// Special handling for exists/not_exists operators with cardinality.
@@ -529,23 +647,43 @@ func evaluateMultiValueConditionAt(cond *compiled.CompiledCondition, body any, n
 		return evaluatePresenceCondition(cond, body, values)
 	}
 
+	expectedCount := -1
+	if cond.BaseExpr != nil {
+		expectedCount = condition.GetArrayLength(cond.BaseExpr, body)
+	}
+
 	if len(values) == 0 {
-		// No values found - behavior depends on cardinality
-		// For "all" and "any", empty means fail (nothing to check)
-		// For "none", empty means pass (nothing violates)
-		passed := cond.Cardinality == compiled.CardinalityNone
-		return passed, &ConditionFailure{
+		// No values found. A present-but-empty base array is definite for
+		// "none" (nothing violates, vacuously). Everything else is unknown:
+		// the values may be absent because they were never collected, and
+		// scoring absence would fabricate a verdict in one direction or the
+		// other. Profiles that need "the array is non-empty" assert it with
+		// an explicit count or exists condition.
+		if cond.Cardinality == compiled.CardinalityNone && expectedCount == 0 {
+			return VerdictTrue, &ConditionFailure{
+				Path:     cond.Path,
+				Expected: &ExpectedValue{Op: cond.Op.String(), Value: cond.Expected},
+				Actual:   nil,
+			}
+		}
+		return VerdictUnknown, &ConditionFailure{
 			Path:     cond.Path,
 			Expected: &ExpectedValue{Op: cond.Op.String(), Value: cond.Expected},
 			Actual:   nil,
 		}
 	}
 
-	var passCount, failCount int
+	// Count definite passes and failures; null elements are unknowns (an
+	// explicit null cannot pass or fail a comparison).
+	var passCount, failCount, unknownCount int
 	var firstFailValue any
 	var firstPassValue any
 
 	for _, val := range values {
+		if val == nil {
+			unknownCount++
+			continue
+		}
 		if cond.Op.ApplyAt(val, cond.Expected, now) {
 			passCount++
 			if firstPassValue == nil {
@@ -559,49 +697,60 @@ func evaluateMultiValueConditionAt(cond *compiled.CompiledCondition, body any, n
 		}
 	}
 
-	var passed bool
+	// Elements missing the field entirely never appear in the result set;
+	// compare against the base array length so per-element absence reads as
+	// unknown rather than being silently skipped (which would let a partially
+	// collected artifact pass a cardinality "all" check).
+	if expectedCount > 0 && len(values) < expectedCount {
+		unknownCount += expectedCount - len(values)
+	}
+
+	var verdict Verdict
 	var actualValue any
 
 	switch cond.Cardinality {
 	case compiled.CardinalityAll:
-		// All values must satisfy the condition
-		passed = failCount == 0
-
-		// Additional check: verify we got values from ALL array elements
-		// This catches the case where some elements are missing the field entirely
-		if passed && cond.BaseExpr != nil {
-			expectedCount := condition.GetArrayLength(cond.BaseExpr, body)
-			if expectedCount > 0 && len(values) < expectedCount {
-				// Some elements are missing the field - fail
-				passed = false
-				actualValue = fmt.Sprintf("%d of %d elements have field", len(values), expectedCount)
-			}
-		}
-
-		if !passed && actualValue == nil {
-			if firstFailValue != nil {
-				actualValue = firstFailValue
-			}
-		}
-		if passed && passCount > 0 {
+		// A definite violation decides false; otherwise any unevaluated
+		// element blocks a pass.
+		switch {
+		case failCount > 0:
+			verdict = VerdictFalse
+			actualValue = firstFailValue
+		case unknownCount > 0:
+			verdict = VerdictUnknown
+			actualValue = fmt.Sprintf("%d of %d elements evaluated", passCount, passCount+unknownCount)
+		default:
+			verdict = VerdictTrue
 			actualValue = firstPassValue
 		}
 
 	case compiled.CardinalityAny:
-		// At least one value must satisfy the condition
-		passed = passCount > 0
-		if passed && firstPassValue != nil {
+		// A definite pass decides true; otherwise an unevaluated element
+		// might have passed.
+		switch {
+		case passCount > 0:
+			verdict = VerdictTrue
 			actualValue = firstPassValue
-		} else if firstFailValue != nil {
+		case unknownCount > 0:
+			verdict = VerdictUnknown
+			actualValue = fmt.Sprintf("0 of %d evaluated elements satisfy; %d unevaluated", failCount, unknownCount)
+		default:
+			verdict = VerdictFalse
 			actualValue = firstFailValue
 		}
 
 	case compiled.CardinalityNone:
-		// No value should satisfy the condition
-		passed = passCount == 0
-		if !passed && firstPassValue != nil {
+		// A definite violation decides false; otherwise an unevaluated
+		// element might have violated.
+		switch {
+		case passCount > 0:
+			verdict = VerdictFalse
 			actualValue = firstPassValue
-		} else if firstFailValue != nil {
+		case unknownCount > 0:
+			verdict = VerdictUnknown
+			actualValue = fmt.Sprintf("%d of %d elements evaluated", failCount, failCount+unknownCount)
+		default:
+			verdict = VerdictTrue
 			actualValue = firstFailValue
 		}
 	}
@@ -620,13 +769,14 @@ func evaluateMultiValueConditionAt(cond *compiled.CompiledCondition, body any, n
 		}
 	}
 
-	return passed, detail
+	return verdict, detail
 }
 
 // evaluatePresenceCondition handles exists/not_exists with cardinality.
 // These operators require special handling because missing elements don't
-// appear in the JSONPath result set - we need to compare counts.
-func evaluatePresenceCondition(cond *compiled.CompiledCondition, body any, values []any) (bool, *ConditionFailure) {
+// appear in the JSONPath result set - we need to compare counts. Presence
+// operators are deliberately two-valued: absence is exactly what they test.
+func evaluatePresenceCondition(cond *compiled.CompiledCondition, body any, values []any) (Verdict, *ConditionFailure) {
 	actualCount := len(values)
 
 	// Get expected element count from base array (if available)
@@ -729,7 +879,11 @@ func evaluatePresenceCondition(cond *compiled.CompiledCondition, body any, value
 		}
 	}
 
-	return passed, &ConditionFailure{
+	verdict := VerdictFalse
+	if passed {
+		verdict = VerdictTrue
+	}
+	return verdict, &ConditionFailure{
 		Path:     cond.Path,
 		Expected: &ExpectedValue{Op: cond.Op.String()},
 		Actual:   actualValue,

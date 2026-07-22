@@ -1,0 +1,40 @@
+# Exercises three-valued evaluation against packs whose metrics are absent
+# (see packs/missing-metrics-pack). A metric that was never collected scores
+# as unknown / insufficient_evidence, never as a pass or a graded failure.
+id: cloud-baseline
+name: Cloud Baseline
+version: 1.0.0
+description: Cloud posture rules over the normalized cloud-posture artifact.
+requirements:
+- id: CLOUD-ROOT
+  name: Highest-Privilege Access Protection
+  category: Privileged Access Management
+  satisfied_by:
+    any_of:
+    - type: evidencepack/cloud-posture@v1
+      metadata_conditions:
+        all:
+        - path: "$.accounts[*].iam.root_access_protected"
+          op: eq
+          value: true
+          cardinality: all
+    - type: evidencepack/cloud-posture@v1
+      severity: critical
+      metadata_conditions:
+        all:
+        - path: "$.accounts[*].iam.root_access_protected"
+          op: eq
+          value: false
+          cardinality: any
+- id: CLOUD-MFA
+  name: MFA Coverage
+  category: Multi-Factor Authentication
+  satisfied_by:
+    any_of:
+    - type: evidencepack/cloud-posture@v1
+      metadata_conditions:
+        all:
+        - path: "$.accounts[*].iam.mfa_coverage_pct"
+          op: gte
+          value: 100
+          cardinality: all

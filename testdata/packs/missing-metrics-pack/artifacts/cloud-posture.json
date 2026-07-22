@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0.0",
+  "collected_at": "2024-06-14T12:00:00Z",
+  "provider": "aws",
+  "accounts_expected": 2,
+  "accounts": [
+    {
+      "account_id": "111111111111",
+      "iam": {
+        "mfa_coverage_pct": 100,
+        "root_mfa_enabled": true,
+        "root_access_protected": true,
+        "access_key_rotation_compliant_pct": 100
+      },
+      "storage": {"encryption_pct": 100, "public_access_blocked_pct": 100},
+      "logging": {"cloudtrail_enabled": true, "cloudtrail_multiregion": true},
+      "network": {"ssh_open_to_world_pct": 0, "rdp_open_to_world_pct": 0},
+      "backup": {"retention_days_min": 14},
+      "vuln_scanning": {"enabled": true, "unpatched_pct": 5}
+    },
+    {
+      "account_id": "222222222222",
+      "collection_error_code": "AccessDenied",
+      "iam": {},
+      "storage": {},
+      "logging": {},
+      "network": {},
+      "backup": {},
+      "vuln_scanning": {}
+    }
+  ]
+}

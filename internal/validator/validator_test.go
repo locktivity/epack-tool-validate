@@ -6,7 +6,6 @@ import (
 
 	"github.com/locktivity/epack-tool-validate/internal/condition"
 	"github.com/locktivity/epack-tool-validate/internal/profile/compiled"
-	"github.com/ohler55/ojg/jp"
 )
 
 func makeTestContext() *Context {
@@ -723,7 +722,7 @@ func TestValidate_ClauseModeAll_OneFails(t *testing.T) {
 					},
 					{
 						Schema:     "evidencepack/idp-posture@v1",
-						Conditions: []compiled.CompiledCondition{makeCompiledCondition("$.nonexistent", "eq", true)}, // Will fail
+						Conditions: []compiled.CompiledCondition{makeCompiledCondition("$.enabled", "eq", false)}, // Definitively fails: enabled is present and true
 						Origin:     compiled.Origin{RequirementID: "REQ-001", ClauseIndex: 1},
 					},
 				},
@@ -735,6 +734,59 @@ func TestValidate_ClauseModeAll_OneFails(t *testing.T) {
 
 	if result.Status != "fail" {
 		t.Errorf("Status = %q, want %q", result.Status, "fail")
+	}
+}
+
+func TestValidate_ClauseModeAll_MissingMetricIsUnknown(t *testing.T) {
+	ctx := makeTestContext()
+	pack := makeTestPackIndex()
+	v := New()
+
+	profile := &compiled.CompiledProfile{
+		ID:      "test-profile",
+		Name:    "Test Profile",
+		Version: "1.0.0",
+		Requirements: []compiled.CompiledRequirement{
+			{
+				ID:   "REQ-001",
+				Name: "All Clauses Must Match",
+				Mode: compiled.ClauseModeAll,
+				Clauses: []compiled.CompiledClause{
+					{
+						Schema:     "evidencepack/idp-posture@v1",
+						Conditions: []compiled.CompiledCondition{makeCompiledCondition("$.enabled", "eq", true)},
+						Origin:     compiled.Origin{RequirementID: "REQ-001", ClauseIndex: 0},
+					},
+					{
+						Schema:     "evidencepack/idp-posture@v1",
+						Conditions: []compiled.CompiledCondition{makeCompiledCondition("$.nonexistent", "eq", true)}, // Absent: cannot be scored
+						Origin:     compiled.Origin{RequirementID: "REQ-001", ClauseIndex: 1},
+					},
+				},
+			},
+		},
+	}
+
+	result := v.Validate(ctx, profile, pack, "")
+
+	if result.Status != "unknown" {
+		t.Errorf("Status = %q, want %q", result.Status, "unknown")
+	}
+	req := result.Requirements[0]
+	if req.Status != "unknown" {
+		t.Errorf("Requirements[0].Status = %q, want %q", req.Status, "unknown")
+	}
+	if req.FailureKind != "insufficient_evidence" {
+		t.Errorf("FailureKind = %q, want %q", req.FailureKind, "insufficient_evidence")
+	}
+	if req.Severity != "" {
+		t.Errorf("Severity = %q, want empty (unknown is not a graded failure)", req.Severity)
+	}
+	if result.Summary.Unknown != 1 {
+		t.Errorf("Summary.Unknown = %d, want 1", result.Summary.Unknown)
+	}
+	if len(result.KeyFailures) != 0 {
+		t.Errorf("KeyFailures = %v, want empty (unknown is not a failure)", result.KeyFailures)
 	}
 }
 
@@ -1036,7 +1088,7 @@ func TestValidate_MetadataDateWithinLastDays_FutureDateFails(t *testing.T) {
 
 	result := evaluateConditionsWithDetailsAt([]compiled.CompiledCondition{cond}, body, ctx.Now())
 
-	if result.Passed {
+	if result.Verdict == VerdictTrue {
 		t.Error("future dates should fail max_age_days")
 	}
 	if result.Detail == nil || result.Detail.Actual != "2024-06-17" {
@@ -1055,7 +1107,7 @@ func TestValidate_MetadataDateWithinLastDays_TomorrowPassesTolerance(t *testing.
 
 	result := evaluateConditionsWithDetailsAt([]compiled.CompiledCondition{cond}, body, ctx.Now())
 
-	if !result.Passed {
+	if result.Verdict != VerdictTrue {
 		t.Error("date-only values one day ahead should pass (timezone tolerance)")
 	}
 }
@@ -1068,7 +1120,7 @@ func TestValidate_MetadataDateWithinLastDays_RFC3339Timestamp(t *testing.T) {
 		"metadata": map[string]any{"completed_at": "2024-06-01T09:30:00Z"},
 	}
 	result := evaluateConditionsWithDetailsAt([]compiled.CompiledCondition{cond}, fresh, ctx.Now())
-	if !result.Passed {
+	if result.Verdict != VerdictTrue {
 		t.Error("RFC3339 timestamp 14 days old should pass max_age_days 30")
 	}
 
@@ -1076,7 +1128,7 @@ func TestValidate_MetadataDateWithinLastDays_RFC3339Timestamp(t *testing.T) {
 		"metadata": map[string]any{"completed_at": "2024-05-01T09:30:00Z"},
 	}
 	result = evaluateConditionsWithDetailsAt([]compiled.CompiledCondition{cond}, stale, ctx.Now())
-	if result.Passed {
+	if result.Verdict == VerdictTrue {
 		t.Error("RFC3339 timestamp 45 days old should fail max_age_days 30")
 	}
 }
@@ -1091,8 +1143,8 @@ func TestValidate_MetadataDateWithinLastDays_CardinalityAll(t *testing.T) {
 			map[string]any{"date": "2024-05-15"},
 		},
 	}
-	passed, _ := evaluateSingleConditionAt(&cond, allFresh, ctx.Now())
-	if !passed {
+	verdict, _ := evaluateSingleConditionAt(&cond, allFresh, ctx.Now())
+	if verdict != VerdictTrue {
 		t.Error("all scan dates within 90 days should pass cardinality:all")
 	}
 
@@ -1102,8 +1154,8 @@ func TestValidate_MetadataDateWithinLastDays_CardinalityAll(t *testing.T) {
 			map[string]any{"date": "2023-12-01"},
 		},
 	}
-	passed, detail := evaluateSingleConditionAt(&cond, oneStale, ctx.Now())
-	if passed {
+	verdict, detail := evaluateSingleConditionAt(&cond, oneStale, ctx.Now())
+	if verdict == VerdictTrue {
 		t.Error("one stale scan date should fail cardinality:all")
 	}
 	if detail == nil || detail.Actual != "2023-12-01" {
@@ -1122,7 +1174,7 @@ func TestValidate_MetadataDateWithinLastDays_MalformedDateFails(t *testing.T) {
 
 	result := evaluateConditionsWithDetailsAt([]compiled.CompiledCondition{cond}, body, ctx.Now())
 
-	if result.Passed {
+	if result.Verdict == VerdictTrue {
 		t.Error("malformed dates should fail max_age_days")
 	}
 	if result.Detail == nil || result.Detail.Expected.Op != "max_age_days" {
@@ -1552,11 +1604,11 @@ func TestEvaluateConditionsWithDetails(t *testing.T) {
 
 	t.Run("empty conditions always pass", func(t *testing.T) {
 		result := evaluateConditionsWithDetails(nil, body)
-		if !result.Passed {
+		if result.Verdict != VerdictTrue {
 			t.Error("nil conditions should pass")
 		}
 		result = evaluateConditionsWithDetails([]compiled.CompiledCondition{}, body)
-		if !result.Passed {
+		if result.Verdict != VerdictTrue {
 			t.Error("empty conditions should pass")
 		}
 	})
@@ -1564,7 +1616,7 @@ func TestEvaluateConditionsWithDetails(t *testing.T) {
 	t.Run("single passing condition", func(t *testing.T) {
 		conds := []compiled.CompiledCondition{makeCompiledCondition("$.enabled", "eq", true)}
 		result := evaluateConditionsWithDetails(conds, body)
-		if !result.Passed {
+		if result.Verdict != VerdictTrue {
 			t.Error("matching condition should pass")
 		}
 	})
@@ -1572,7 +1624,7 @@ func TestEvaluateConditionsWithDetails(t *testing.T) {
 	t.Run("single failing condition", func(t *testing.T) {
 		conds := []compiled.CompiledCondition{makeCompiledCondition("$.enabled", "eq", false)}
 		result := evaluateConditionsWithDetails(conds, body)
-		if result.Passed {
+		if result.Verdict == VerdictTrue {
 			t.Error("non-matching condition should fail")
 		}
 	})
@@ -1583,7 +1635,7 @@ func TestEvaluateConditionsWithDetails(t *testing.T) {
 			makeCompiledCondition("$.count", "gte", 100.0),
 		}
 		result := evaluateConditionsWithDetails(conds, body)
-		if !result.Passed {
+		if result.Verdict != VerdictTrue {
 			t.Error("all matching conditions should pass")
 		}
 	})
@@ -1594,23 +1646,23 @@ func TestEvaluateConditionsWithDetails(t *testing.T) {
 			makeCompiledCondition("$.count", "gte", 200.0), // Fails
 		}
 		result := evaluateConditionsWithDetails(conds, body)
-		if result.Passed {
+		if result.Verdict == VerdictTrue {
 			t.Error("one failing condition should fail all")
 		}
 	})
 
-	t.Run("missing path fails", func(t *testing.T) {
+	t.Run("missing path is unknown", func(t *testing.T) {
 		conds := []compiled.CompiledCondition{makeCompiledCondition("$.nonexistent", "eq", true)}
 		result := evaluateConditionsWithDetails(conds, body)
-		if result.Passed {
-			t.Error("missing path should fail")
+		if result.Verdict != VerdictUnknown {
+			t.Errorf("missing path should be unknown, got %v", result.Verdict)
 		}
 	})
 
 	t.Run("returns failure details", func(t *testing.T) {
 		conds := []compiled.CompiledCondition{makeCompiledCondition("$.count", "gte", 200.0)}
 		result := evaluateConditionsWithDetails(conds, body)
-		if result.Passed {
+		if result.Verdict == VerdictTrue {
 			t.Fatal("expected failure")
 		}
 		if result.Detail == nil {
@@ -1642,7 +1694,7 @@ func TestEvaluateConditionsWithDetails(t *testing.T) {
 	t.Run("passing conditions still return details for graduated checks", func(t *testing.T) {
 		conds := []compiled.CompiledCondition{makeCompiledCondition("$.count", "gte", 90.0)}
 		result := evaluateConditionsWithDetails(conds, body)
-		if !result.Passed {
+		if result.Verdict != VerdictTrue {
 			t.Error("condition should pass")
 		}
 		if result.Detail == nil {
@@ -1780,15 +1832,9 @@ func makeCompiledConditionWithCardinality(path, op string, expected any, cardina
 	expr, isMulti, _ := condition.ParseJSONPathMulti(path)
 	parsedOp, _ := condition.ParseOperator(op)
 
-	// Compute BaseExpr for element count checking when needed:
-	// - cardinality:all (for partial presence detection)
-	// - exists/not_exists with any cardinality (need element count comparison)
-	var baseExpr jp.Expr
-	if cardinality == compiled.CardinalityAll ||
-		parsedOp == condition.OpExists ||
-		parsedOp == condition.OpNotExists {
-		baseExpr = condition.ExtractBasePath(expr)
-	}
+	// Compute BaseExpr for element count checking, mirroring the compiler:
+	// every cardinality uses it for absence detection.
+	baseExpr := condition.ExtractBasePath(expr)
 
 	return compiled.CompiledCondition{
 		Path:        path,
@@ -1815,8 +1861,8 @@ func TestEvaluateMultiValueCondition(t *testing.T) {
 	t.Run("cardinality all - all values pass", func(t *testing.T) {
 		// All accounts have mfa_enabled field existing
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].id", "exists", nil, compiled.CardinalityAll)
-		passed, _ := evaluateSingleCondition(&cond, body)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, body)
+		if verdict != VerdictTrue {
 			t.Error("all accounts have id, should pass")
 		}
 	})
@@ -1824,8 +1870,8 @@ func TestEvaluateMultiValueCondition(t *testing.T) {
 	t.Run("cardinality all - one value fails", func(t *testing.T) {
 		// Not all accounts have mfa_enabled = true
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].mfa_enabled", "eq", true, compiled.CardinalityAll)
-		passed, detail := evaluateSingleCondition(&cond, body)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, body)
+		if verdict == VerdictTrue {
 			t.Error("one account has mfa_enabled=false, should fail")
 		}
 		if detail.Actual != false {
@@ -1836,8 +1882,8 @@ func TestEvaluateMultiValueCondition(t *testing.T) {
 	t.Run("cardinality any - at least one passes", func(t *testing.T) {
 		// At least one account has mfa_enabled = false
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].mfa_enabled", "eq", false, compiled.CardinalityAny)
-		passed, _ := evaluateSingleCondition(&cond, body)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, body)
+		if verdict != VerdictTrue {
 			t.Error("one account has mfa_enabled=false, should pass")
 		}
 	})
@@ -1845,8 +1891,8 @@ func TestEvaluateMultiValueCondition(t *testing.T) {
 	t.Run("cardinality any - none pass", func(t *testing.T) {
 		// No account has role = "superuser"
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].role", "eq", "superuser", compiled.CardinalityAny)
-		passed, _ := evaluateSingleCondition(&cond, body)
-		if passed {
+		verdict, _ := evaluateSingleCondition(&cond, body)
+		if verdict == VerdictTrue {
 			t.Error("no account has role=superuser, should fail")
 		}
 	})
@@ -1854,8 +1900,8 @@ func TestEvaluateMultiValueCondition(t *testing.T) {
 	t.Run("cardinality none - no value passes", func(t *testing.T) {
 		// No account has role = "superuser"
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].role", "eq", "superuser", compiled.CardinalityNone)
-		passed, _ := evaluateSingleCondition(&cond, body)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, body)
+		if verdict != VerdictTrue {
 			t.Error("no account has role=superuser, cardinality:none should pass")
 		}
 	})
@@ -1863,8 +1909,8 @@ func TestEvaluateMultiValueCondition(t *testing.T) {
 	t.Run("cardinality none - one value passes (fail)", func(t *testing.T) {
 		// At least one account has role = "admin" (violation for none)
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].role", "eq", "admin", compiled.CardinalityNone)
-		passed, _ := evaluateSingleCondition(&cond, body)
-		if passed {
+		verdict, _ := evaluateSingleCondition(&cond, body)
+		if verdict == VerdictTrue {
 			t.Error("one account has role=admin, cardinality:none should fail")
 		}
 	})
@@ -1872,8 +1918,8 @@ func TestEvaluateMultiValueCondition(t *testing.T) {
 	t.Run("cardinality all with numeric comparison", func(t *testing.T) {
 		// All scores >= 70
 		cond := makeCompiledConditionWithCardinality("$.scores[*]", "gte", 70.0, compiled.CardinalityAll)
-		passed, _ := evaluateSingleCondition(&cond, body)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, body)
+		if verdict != VerdictTrue {
 			t.Error("all scores >= 70, should pass")
 		}
 	})
@@ -1882,8 +1928,8 @@ func TestEvaluateMultiValueCondition(t *testing.T) {
 		// All scores >= 90 (88 is the first value that fails)
 		// scores = [95.0, 88.0, 72.0, 100.0] - 88 is checked before 72
 		cond := makeCompiledConditionWithCardinality("$.scores[*]", "gte", 90.0, compiled.CardinalityAll)
-		passed, detail := evaluateSingleCondition(&cond, body)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, body)
+		if verdict == VerdictTrue {
 			t.Error("88 < 90, should fail")
 		}
 		// Should show the first failing value (88) and delta
@@ -1895,27 +1941,28 @@ func TestEvaluateMultiValueCondition(t *testing.T) {
 		}
 	})
 
-	t.Run("empty array - cardinality all fails", func(t *testing.T) {
+	t.Run("empty array - cardinality all is unknown", func(t *testing.T) {
 		emptyBody := map[string]any{"items": []any{}}
 		cond := makeCompiledConditionWithCardinality("$.items[*].value", "eq", true, compiled.CardinalityAll)
-		passed, _ := evaluateSingleCondition(&cond, emptyBody)
-		if passed {
-			t.Error("empty array with cardinality:all should fail")
+		verdict, _ := evaluateSingleCondition(&cond, emptyBody)
+		if verdict != VerdictUnknown {
+			t.Errorf("empty array with cardinality:all should be unknown, got %v", verdict)
 		}
 	})
 
 	t.Run("empty array - cardinality none passes", func(t *testing.T) {
 		emptyBody := map[string]any{"items": []any{}}
 		cond := makeCompiledConditionWithCardinality("$.items[*].value", "eq", true, compiled.CardinalityNone)
-		passed, _ := evaluateSingleCondition(&cond, emptyBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, emptyBody)
+		if verdict != VerdictTrue {
 			t.Error("empty array with cardinality:none should pass")
 		}
 	})
 
-	t.Run("cardinality all - partial presence fails", func(t *testing.T) {
-		// Some accounts are missing the field entirely
-		// This should fail even though the existing values all pass
+	t.Run("cardinality all - partial presence is unknown", func(t *testing.T) {
+		// Some accounts are missing the field entirely. The present values all
+		// pass, but the absent ones might not have: the condition cannot be
+		// scored either way.
 		partialBody := map[string]any{
 			"accounts": []any{
 				map[string]any{"id": "acc1", "mfa_enabled": true},
@@ -1924,20 +1971,20 @@ func TestEvaluateMultiValueCondition(t *testing.T) {
 			},
 		}
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].mfa_enabled", "eq", true, compiled.CardinalityAll)
-		passed, detail := evaluateSingleCondition(&cond, partialBody)
-		if passed {
-			t.Error("one account missing mfa_enabled field, should fail with cardinality:all")
+		verdict, detail := evaluateSingleCondition(&cond, partialBody)
+		if verdict != VerdictUnknown {
+			t.Errorf("one account missing mfa_enabled field, should be unknown with cardinality:all, got %v", verdict)
 		}
-		// Should report that 2 of 3 elements have the field
+		// Should report that 2 of 3 elements were evaluated
 		if detail.Actual == nil {
-			t.Fatal("Actual should indicate missing elements")
+			t.Fatal("Actual should indicate unevaluated elements")
 		}
 		actualStr, ok := detail.Actual.(string)
 		if !ok {
 			t.Fatalf("Actual should be string for partial presence, got %T", detail.Actual)
 		}
-		if actualStr != "2 of 3 elements have field" {
-			t.Errorf("Actual = %q, want %q", actualStr, "2 of 3 elements have field")
+		if actualStr != "2 of 3 elements evaluated" {
+			t.Errorf("Actual = %q, want %q", actualStr, "2 of 3 elements evaluated")
 		}
 	})
 
@@ -1951,8 +1998,8 @@ func TestEvaluateMultiValueCondition(t *testing.T) {
 			},
 		}
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].mfa_enabled", "eq", true, compiled.CardinalityAll)
-		passed, _ := evaluateSingleCondition(&cond, allPresentBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, allPresentBody)
+		if verdict != VerdictTrue {
 			t.Error("all accounts have mfa_enabled=true, should pass")
 		}
 	})
@@ -1990,16 +2037,16 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 
 	t.Run("exists + cardinality:all - all have field passes", func(t *testing.T) {
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].field", "exists", nil, compiled.CardinalityAll)
-		passed, _ := evaluateSingleCondition(&cond, allPresentBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, allPresentBody)
+		if verdict != VerdictTrue {
 			t.Error("all accounts have field, should pass")
 		}
 	})
 
 	t.Run("exists + cardinality:all - partial presence fails", func(t *testing.T) {
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].deprecated_field", "exists", nil, compiled.CardinalityAll)
-		passed, detail := evaluateSingleCondition(&cond, partialBody)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, partialBody)
+		if verdict == VerdictTrue {
 			t.Error("only 2 of 3 accounts have deprecated_field, should fail")
 		}
 		// Should report partial presence
@@ -2014,32 +2061,32 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 
 	t.Run("exists + cardinality:any - partial presence passes", func(t *testing.T) {
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].deprecated_field", "exists", nil, compiled.CardinalityAny)
-		passed, _ := evaluateSingleCondition(&cond, partialBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, partialBody)
+		if verdict != VerdictTrue {
 			t.Error("at least one account has deprecated_field, should pass")
 		}
 	})
 
 	t.Run("exists + cardinality:any - none present fails", func(t *testing.T) {
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].field", "exists", nil, compiled.CardinalityAny)
-		passed, _ := evaluateSingleCondition(&cond, nonePresentBody)
-		if passed {
+		verdict, _ := evaluateSingleCondition(&cond, nonePresentBody)
+		if verdict == VerdictTrue {
 			t.Error("no accounts have field, should fail")
 		}
 	})
 
 	t.Run("exists + cardinality:none - none present passes", func(t *testing.T) {
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].deprecated_field", "exists", nil, compiled.CardinalityNone)
-		passed, _ := evaluateSingleCondition(&cond, nonePresentBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, nonePresentBody)
+		if verdict != VerdictTrue {
 			t.Error("no accounts have deprecated_field, should pass")
 		}
 	})
 
 	t.Run("exists + cardinality:none - some present fails", func(t *testing.T) {
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].deprecated_field", "exists", nil, compiled.CardinalityNone)
-		passed, _ := evaluateSingleCondition(&cond, partialBody)
-		if passed {
+		verdict, _ := evaluateSingleCondition(&cond, partialBody)
+		if verdict == VerdictTrue {
 			t.Error("some accounts have deprecated_field, should fail")
 		}
 	})
@@ -2048,16 +2095,16 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 
 	t.Run("not_exists + cardinality:all - none have field passes", func(t *testing.T) {
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].deprecated_field", "not_exists", nil, compiled.CardinalityAll)
-		passed, _ := evaluateSingleCondition(&cond, nonePresentBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, nonePresentBody)
+		if verdict != VerdictTrue {
 			t.Error("no accounts have deprecated_field, should pass")
 		}
 	})
 
 	t.Run("not_exists + cardinality:all - some have field fails", func(t *testing.T) {
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].deprecated_field", "not_exists", nil, compiled.CardinalityAll)
-		passed, detail := evaluateSingleCondition(&cond, partialBody)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, partialBody)
+		if verdict == VerdictTrue {
 			t.Error("2 of 3 accounts have deprecated_field, should fail")
 		}
 		// Should report how many have non-null values (null values satisfy not_exists)
@@ -2073,8 +2120,8 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 	t.Run("not_exists + cardinality:any - partial presence passes", func(t *testing.T) {
 		// At least one element is missing the field (satisfies not_exists)
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].deprecated_field", "not_exists", nil, compiled.CardinalityAny)
-		passed, detail := evaluateSingleCondition(&cond, partialBody)
-		if !passed {
+		verdict, detail := evaluateSingleCondition(&cond, partialBody)
+		if verdict != VerdictTrue {
 			t.Error("1 of 3 accounts missing deprecated_field, should pass")
 		}
 		// Should report how many satisfy not_exists
@@ -2089,8 +2136,8 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 
 	t.Run("not_exists + cardinality:any - all have field fails", func(t *testing.T) {
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].field", "not_exists", nil, compiled.CardinalityAny)
-		passed, detail := evaluateSingleCondition(&cond, allPresentBody)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, allPresentBody)
+		if verdict == VerdictTrue {
 			t.Error("all accounts have field, should fail")
 		}
 		// Should report all elements have the field
@@ -2106,8 +2153,8 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 	t.Run("not_exists + cardinality:none - all have field passes", func(t *testing.T) {
 		// No element should be missing the field (all must have it)
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].field", "not_exists", nil, compiled.CardinalityNone)
-		passed, _ := evaluateSingleCondition(&cond, allPresentBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, allPresentBody)
+		if verdict != VerdictTrue {
 			t.Error("all accounts have field, cardinality:none for not_exists should pass")
 		}
 	})
@@ -2115,8 +2162,8 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 	t.Run("not_exists + cardinality:none - some missing fails", func(t *testing.T) {
 		// Some elements are missing - this violates "none should satisfy not_exists"
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].deprecated_field", "not_exists", nil, compiled.CardinalityNone)
-		passed, detail := evaluateSingleCondition(&cond, partialBody)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, partialBody)
+		if verdict == VerdictTrue {
 			t.Error("1 account missing deprecated_field, cardinality:none for not_exists should fail")
 		}
 		// Should report how many satisfy not_exists
@@ -2153,8 +2200,8 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 	t.Run("exists + cardinality:all - null values fail", func(t *testing.T) {
 		// exists requires non-null, so null values should fail
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].field", "exists", nil, compiled.CardinalityAll)
-		passed, detail := evaluateSingleCondition(&cond, nullBody)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, nullBody)
+		if verdict == VerdictTrue {
 			t.Error("one account has null field, should fail")
 		}
 		// Only 1 of 3 elements has non-null field (acc2)
@@ -2170,8 +2217,8 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 	t.Run("exists + cardinality:any - one non-null passes", func(t *testing.T) {
 		// At least one non-null value exists
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].field", "exists", nil, compiled.CardinalityAny)
-		passed, _ := evaluateSingleCondition(&cond, nullBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, nullBody)
+		if verdict != VerdictTrue {
 			t.Error("acc2 has non-null field, should pass")
 		}
 	})
@@ -2179,8 +2226,8 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 	t.Run("exists + cardinality:any - all null fails", func(t *testing.T) {
 		// No non-null values
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].field", "exists", nil, compiled.CardinalityAny)
-		passed, _ := evaluateSingleCondition(&cond, allNullBody)
-		if passed {
+		verdict, _ := evaluateSingleCondition(&cond, allNullBody)
+		if verdict == VerdictTrue {
 			t.Error("all fields are null, should fail")
 		}
 	})
@@ -2188,8 +2235,8 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 	t.Run("not_exists + cardinality:all - all null passes", func(t *testing.T) {
 		// All values are null, so all satisfy not_exists
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].field", "not_exists", nil, compiled.CardinalityAll)
-		passed, _ := evaluateSingleCondition(&cond, allNullBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, allNullBody)
+		if verdict != VerdictTrue {
 			t.Error("all fields are null, should pass not_exists:all")
 		}
 	})
@@ -2197,8 +2244,8 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 	t.Run("not_exists + cardinality:all - one non-null fails", func(t *testing.T) {
 		// acc2 has non-null value, so not all satisfy not_exists
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].field", "not_exists", nil, compiled.CardinalityAll)
-		passed, detail := evaluateSingleCondition(&cond, nullBody)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, nullBody)
+		if verdict == VerdictTrue {
 			t.Error("acc2 has non-null field, should fail not_exists:all")
 		}
 		actualStr, ok := detail.Actual.(string)
@@ -2213,8 +2260,8 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 	t.Run("not_exists + cardinality:any - null satisfies", func(t *testing.T) {
 		// acc1 has null (satisfies), acc3 is missing (satisfies)
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].field", "not_exists", nil, compiled.CardinalityAny)
-		passed, detail := evaluateSingleCondition(&cond, nullBody)
-		if !passed {
+		verdict, detail := evaluateSingleCondition(&cond, nullBody)
+		if verdict != VerdictTrue {
 			t.Error("acc1 has null and acc3 is missing, should pass not_exists:any")
 		}
 		// 2 of 3 satisfy not_exists (null + missing)
@@ -2230,8 +2277,8 @@ func TestEvaluatePresenceCondition(t *testing.T) {
 	t.Run("not_exists + cardinality:none - null violates", func(t *testing.T) {
 		// null values satisfy not_exists, so cardinality:none should fail
 		cond := makeCompiledConditionWithCardinality("$.accounts[*].field", "not_exists", nil, compiled.CardinalityNone)
-		passed, detail := evaluateSingleCondition(&cond, nullBody)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, nullBody)
+		if verdict == VerdictTrue {
 			t.Error("acc1 has null and acc3 is missing, should fail not_exists:none")
 		}
 		actualStr, ok := detail.Actual.(string)
@@ -2304,16 +2351,16 @@ func TestEvaluatePresenceCondition_RecursiveDescent(t *testing.T) {
 	// Without BaseExpr, we can only verify all found values are non-null
 	t.Run("exists + recursive descent + cardinality:all - all found non-null passes", func(t *testing.T) {
 		cond := makeRecursiveDescentCondition("$..field", "exists", compiled.CardinalityAll)
-		passed, _ := evaluateSingleCondition(&cond, nestedBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, nestedBody)
+		if verdict != VerdictTrue {
 			t.Error("all $..field values are non-null, should pass")
 		}
 	})
 
 	t.Run("exists + recursive descent + cardinality:all - some null fails", func(t *testing.T) {
 		cond := makeRecursiveDescentCondition("$..field", "exists", compiled.CardinalityAll)
-		passed, detail := evaluateSingleCondition(&cond, nullNestedBody)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, nullNestedBody)
+		if verdict == VerdictTrue {
 			t.Error("some $..field values are null, should fail exists:all")
 		}
 		// Should indicate null values found
@@ -2328,8 +2375,8 @@ func TestEvaluatePresenceCondition_RecursiveDescent(t *testing.T) {
 
 	t.Run("exists + recursive descent + cardinality:all - no matches fails", func(t *testing.T) {
 		cond := makeRecursiveDescentCondition("$..field", "exists", compiled.CardinalityAll)
-		passed, _ := evaluateSingleCondition(&cond, noFieldBody)
-		if passed {
+		verdict, _ := evaluateSingleCondition(&cond, noFieldBody)
+		if verdict == VerdictTrue {
 			t.Error("no $..field values found, should fail exists:all")
 		}
 	})
@@ -2337,16 +2384,16 @@ func TestEvaluatePresenceCondition_RecursiveDescent(t *testing.T) {
 	// exists + cardinality:any with recursive descent
 	t.Run("exists + recursive descent + cardinality:any - one non-null passes", func(t *testing.T) {
 		cond := makeRecursiveDescentCondition("$..field", "exists", compiled.CardinalityAny)
-		passed, _ := evaluateSingleCondition(&cond, nullNestedBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, nullNestedBody)
+		if verdict != VerdictTrue {
 			t.Error("at least one $..field is non-null, should pass")
 		}
 	})
 
 	t.Run("exists + recursive descent + cardinality:any - no matches fails", func(t *testing.T) {
 		cond := makeRecursiveDescentCondition("$..field", "exists", compiled.CardinalityAny)
-		passed, _ := evaluateSingleCondition(&cond, noFieldBody)
-		if passed {
+		verdict, _ := evaluateSingleCondition(&cond, noFieldBody)
+		if verdict == VerdictTrue {
 			t.Error("no $..field values found, should fail exists:any")
 		}
 	})
@@ -2354,16 +2401,16 @@ func TestEvaluatePresenceCondition_RecursiveDescent(t *testing.T) {
 	// exists + cardinality:none with recursive descent
 	t.Run("exists + recursive descent + cardinality:none - no matches passes", func(t *testing.T) {
 		cond := makeRecursiveDescentCondition("$..field", "exists", compiled.CardinalityNone)
-		passed, _ := evaluateSingleCondition(&cond, noFieldBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, noFieldBody)
+		if verdict != VerdictTrue {
 			t.Error("no $..field values found, cardinality:none should pass")
 		}
 	})
 
 	t.Run("exists + recursive descent + cardinality:none - some matches fails", func(t *testing.T) {
 		cond := makeRecursiveDescentCondition("$..field", "exists", compiled.CardinalityNone)
-		passed, _ := evaluateSingleCondition(&cond, nestedBody)
-		if passed {
+		verdict, _ := evaluateSingleCondition(&cond, nestedBody)
+		if verdict == VerdictTrue {
 			t.Error("$..field values found, cardinality:none should fail")
 		}
 	})
@@ -2381,16 +2428,16 @@ func TestEvaluatePresenceCondition_RecursiveDescent(t *testing.T) {
 			},
 		}
 		cond := makeRecursiveDescentCondition("$..field", "not_exists", compiled.CardinalityAll)
-		passed, _ := evaluateSingleCondition(&cond, allNullNestedBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, allNullNestedBody)
+		if verdict != VerdictTrue {
 			t.Error("all $..field values are null, should pass not_exists:all")
 		}
 	})
 
 	t.Run("not_exists + recursive descent + cardinality:all - some non-null fails", func(t *testing.T) {
 		cond := makeRecursiveDescentCondition("$..field", "not_exists", compiled.CardinalityAll)
-		passed, detail := evaluateSingleCondition(&cond, nullNestedBody)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, nullNestedBody)
+		if verdict == VerdictTrue {
 			t.Error("some $..field values are non-null, should fail not_exists:all")
 		}
 		actualStr, ok := detail.Actual.(string)
@@ -2405,16 +2452,16 @@ func TestEvaluatePresenceCondition_RecursiveDescent(t *testing.T) {
 	// not_exists + cardinality:any with recursive descent
 	t.Run("not_exists + recursive descent + cardinality:any - some null passes", func(t *testing.T) {
 		cond := makeRecursiveDescentCondition("$..field", "not_exists", compiled.CardinalityAny)
-		passed, _ := evaluateSingleCondition(&cond, nullNestedBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, nullNestedBody)
+		if verdict != VerdictTrue {
 			t.Error("some $..field values are null, should pass not_exists:any")
 		}
 	})
 
 	t.Run("not_exists + recursive descent + cardinality:any - all non-null fails", func(t *testing.T) {
 		cond := makeRecursiveDescentCondition("$..field", "not_exists", compiled.CardinalityAny)
-		passed, detail := evaluateSingleCondition(&cond, nestedBody)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, nestedBody)
+		if verdict == VerdictTrue {
 			t.Error("all $..field values are non-null, should fail not_exists:any")
 		}
 		actualStr, ok := detail.Actual.(string)
@@ -2429,16 +2476,16 @@ func TestEvaluatePresenceCondition_RecursiveDescent(t *testing.T) {
 	// not_exists + cardinality:none with recursive descent
 	t.Run("not_exists + recursive descent + cardinality:none - all non-null passes", func(t *testing.T) {
 		cond := makeRecursiveDescentCondition("$..field", "not_exists", compiled.CardinalityNone)
-		passed, _ := evaluateSingleCondition(&cond, nestedBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, nestedBody)
+		if verdict != VerdictTrue {
 			t.Error("all $..field values are non-null, cardinality:none should pass (no element satisfies not_exists)")
 		}
 	})
 
 	t.Run("not_exists + recursive descent + cardinality:none - some null fails", func(t *testing.T) {
 		cond := makeRecursiveDescentCondition("$..field", "not_exists", compiled.CardinalityNone)
-		passed, detail := evaluateSingleCondition(&cond, nullNestedBody)
-		if passed {
+		verdict, detail := evaluateSingleCondition(&cond, nullNestedBody)
+		if verdict == VerdictTrue {
 			t.Error("some $..field values are null, cardinality:none should fail")
 		}
 		actualStr, ok := detail.Actual.(string)
@@ -2454,8 +2501,8 @@ func TestEvaluatePresenceCondition_RecursiveDescent(t *testing.T) {
 	t.Run("not_exists + recursive descent + cardinality:all - no matches passes", func(t *testing.T) {
 		// When no values are found, not_exists:all should pass (vacuously true)
 		cond := makeRecursiveDescentCondition("$..field", "not_exists", compiled.CardinalityAll)
-		passed, _ := evaluateSingleCondition(&cond, noFieldBody)
-		if !passed {
+		verdict, _ := evaluateSingleCondition(&cond, noFieldBody)
+		if verdict != VerdictTrue {
 			t.Error("no $..field values found, not_exists:all should pass (vacuously)")
 		}
 	})
@@ -2464,11 +2511,198 @@ func TestEvaluatePresenceCondition_RecursiveDescent(t *testing.T) {
 		// When no values are found, not_exists:any needs at least one null to pass
 		// But there are no values at all, so we can't find a null one
 		cond := makeRecursiveDescentCondition("$..field", "not_exists", compiled.CardinalityAny)
-		passed, _ := evaluateSingleCondition(&cond, noFieldBody)
+		verdict, _ := evaluateSingleCondition(&cond, noFieldBody)
 		// This is a semantic question: should "no values found" count as "found a null"?
 		// Current implementation: no values found means no null values found → fails
-		if passed {
+		if verdict == VerdictTrue {
 			t.Error("no $..field values found, not_exists:any should fail (no null value to find)")
 		}
 	})
+}
+
+// makeCloudPosturePack builds a PackIndex holding one cloud-posture artifact
+// with the given accounts, mirroring the shape cloud collectors emit.
+func makeCloudPosturePack(accounts []any) *PackIndex {
+	now := time.Date(2024, 6, 14, 12, 0, 0, 0, time.UTC)
+	return &PackIndex{
+		BySchema: map[string][]IndexedArtifact{
+			"evidencepack/cloud-posture@v1": {
+				{
+					Path:        "artifacts/aws.cloud-posture.json",
+					Schema:      "evidencepack/cloud-posture@v1",
+					CollectedAt: &now,
+					Body: map[string]any{
+						"provider": "aws",
+						"accounts": accounts,
+					},
+				},
+			},
+		},
+	}
+}
+
+// makeRootProtectionRequirement models the graduated any_of shape cloud
+// profiles use for the highest-severity access rules: a pass clause requiring
+// the metric true for every account, and a critical clause matching when any
+// account reports it false.
+func makeRootProtectionRequirement() compiled.CompiledRequirement {
+	passCond := makeCompiledConditionWithCardinality("$.accounts[*].iam.root_access_protected", "eq", true, compiled.CardinalityAll)
+	failCond := makeCompiledConditionWithCardinality("$.accounts[*].iam.root_access_protected", "eq", false, compiled.CardinalityAny)
+	return compiled.CompiledRequirement{
+		ID:   "REQ-ROOT",
+		Name: "Highest-Privilege Access Protection",
+		Mode: compiled.ClauseModeAny,
+		Clauses: []compiled.CompiledClause{
+			{
+				Schema:     "evidencepack/cloud-posture@v1",
+				Conditions: []compiled.CompiledCondition{passCond},
+				Origin:     compiled.Origin{RequirementID: "REQ-ROOT", ClauseIndex: 0},
+			},
+			{
+				Schema:     "evidencepack/cloud-posture@v1",
+				Severity:   "critical",
+				Conditions: []compiled.CompiledCondition{failCond},
+				Origin:     compiled.Origin{RequirementID: "REQ-ROOT", ClauseIndex: 1},
+			},
+		},
+	}
+}
+
+func makeRootProtectionProfile() *compiled.CompiledProfile {
+	return &compiled.CompiledProfile{
+		ID:           "cloud-test",
+		Name:         "Cloud Test",
+		Version:      "1.0.0",
+		Requirements: []compiled.CompiledRequirement{makeRootProtectionRequirement()},
+	}
+}
+
+func TestValidate_CloudPosture_AbsentMetricIsUnknownNotCritical(t *testing.T) {
+	// The originating incident: a transient collection failure means the
+	// account entry carries no root_access_protected at all. That must score
+	// as unknown, not as the critical clause matching, and not as the
+	// no-clause-matched default failure.
+	ctx := makeTestContext()
+	pack := makeCloudPosturePack([]any{
+		map[string]any{"account_id": "111111111111", "iam": map[string]any{}},
+	})
+
+	result := New().Validate(ctx, makeRootProtectionProfile(), pack, "")
+
+	req := result.Requirements[0]
+	if req.Status != "unknown" {
+		t.Fatalf("Status = %q, want unknown", req.Status)
+	}
+	if req.Severity != "" {
+		t.Errorf("Severity = %q, want empty", req.Severity)
+	}
+	if req.FailureKind != "insufficient_evidence" {
+		t.Errorf("FailureKind = %q, want insufficient_evidence", req.FailureKind)
+	}
+	if result.Status != "unknown" {
+		t.Errorf("overall Status = %q, want unknown", result.Status)
+	}
+	if result.Summary.Unknown != 1 || result.Summary.Failed != 0 {
+		t.Errorf("Summary = %+v, want Unknown=1 Failed=0", result.Summary)
+	}
+	if len(result.KeyFailures) != 0 {
+		t.Errorf("KeyFailures = %v, want empty", result.KeyFailures)
+	}
+}
+
+func TestValidate_CloudPosture_PartialAccountBlocksSilentPass(t *testing.T) {
+	// One healthy account plus one whose metric is absent (e.g. a failed
+	// account's stub entry). Previously the pass clause evaluated only the
+	// present value and the requirement silently passed; it must be unknown.
+	ctx := makeTestContext()
+	pack := makeCloudPosturePack([]any{
+		map[string]any{"account_id": "111111111111", "iam": map[string]any{"root_access_protected": true}},
+		map[string]any{"account_id": "222222222222", "collection_error_code": "AccessDenied", "iam": map[string]any{}},
+	})
+
+	result := New().Validate(ctx, makeRootProtectionProfile(), pack, "")
+
+	req := result.Requirements[0]
+	if req.Status != "unknown" {
+		t.Fatalf("Status = %q, want unknown (was a silent pass before three-valued evaluation)", req.Status)
+	}
+	if result.Summary.Unknown != 1 {
+		t.Errorf("Summary.Unknown = %d, want 1", result.Summary.Unknown)
+	}
+}
+
+func TestValidate_CloudPosture_DefiniteCriticalStillFails(t *testing.T) {
+	// A present, adverse value keeps its graded severity: three-valued
+	// evaluation must not soften real findings.
+	ctx := makeTestContext()
+	pack := makeCloudPosturePack([]any{
+		map[string]any{"account_id": "111111111111", "iam": map[string]any{"root_access_protected": false}},
+	})
+
+	result := New().Validate(ctx, makeRootProtectionProfile(), pack, "")
+
+	req := result.Requirements[0]
+	if req.Status != "fail" {
+		t.Fatalf("Status = %q, want fail", req.Status)
+	}
+	if req.Severity != "critical" {
+		t.Errorf("Severity = %q, want critical", req.Severity)
+	}
+	if len(result.KeyFailures) != 1 {
+		t.Errorf("KeyFailures = %v, want the critical finding", result.KeyFailures)
+	}
+}
+
+func TestValidate_CloudPosture_AllHealthyPasses(t *testing.T) {
+	ctx := makeTestContext()
+	pack := makeCloudPosturePack([]any{
+		map[string]any{"account_id": "111111111111", "iam": map[string]any{"root_access_protected": true}},
+		map[string]any{"account_id": "222222222222", "iam": map[string]any{"root_access_protected": true}},
+	})
+
+	result := New().Validate(ctx, makeRootProtectionProfile(), pack, "")
+
+	if result.Requirements[0].Status != "pass" {
+		t.Fatalf("Status = %q, want pass", result.Requirements[0].Status)
+	}
+	if result.Status != "pass" {
+		t.Errorf("overall Status = %q, want pass", result.Status)
+	}
+}
+
+func TestValidate_UnknownDoesNotOutrankFail(t *testing.T) {
+	// A profile with one definite failure and one unknown requirement reports
+	// overall "fail": absent evidence never hides a real finding.
+	ctx := makeTestContext()
+	pack := makeCloudPosturePack([]any{
+		map[string]any{"account_id": "111111111111", "iam": map[string]any{"root_access_protected": false}},
+	})
+
+	unknownReq := makeRootProtectionRequirement()
+	unknownReq.ID = "REQ-UNKNOWN"
+	unknownReq.Clauses[0].Conditions = []compiled.CompiledCondition{
+		makeCompiledConditionWithCardinality("$.accounts[*].iam.mfa_coverage_pct", "gte", 100.0, compiled.CardinalityAll),
+	}
+	unknownReq.Clauses[1].Conditions = []compiled.CompiledCondition{
+		makeCompiledConditionWithCardinality("$.accounts[*].iam.mfa_coverage_pct", "lt", 100.0, compiled.CardinalityAny),
+	}
+
+	profile := &compiled.CompiledProfile{
+		ID:      "cloud-test",
+		Name:    "Cloud Test",
+		Version: "1.0.0",
+		Requirements: []compiled.CompiledRequirement{
+			makeRootProtectionRequirement(),
+			unknownReq,
+		},
+	}
+
+	result := New().Validate(ctx, profile, pack, "")
+
+	if result.Status != "fail" {
+		t.Fatalf("overall Status = %q, want fail (fail outranks unknown)", result.Status)
+	}
+	if result.Summary.Failed != 1 || result.Summary.Unknown != 1 {
+		t.Errorf("Summary = %+v, want Failed=1 Unknown=1", result.Summary)
+	}
 }

@@ -278,4 +278,4 @@ tools:
 | 0 | Validation completed (check `validation.json` for pass/fail) |
 | 1 | Operational error (profile not found, invalid YAML, etc.) |
 
-Note: A failing validation (requirements not met) still exits with code 0. Check the `status` field in `validation.json` to determine pass/fail.
+Note: A failing validation (requirements not met) still exits with code 0. Check the `status` field in `validation.json`: `pass`, `fail`, or `unknown` (evidence absent for at least one requirement, none failing).

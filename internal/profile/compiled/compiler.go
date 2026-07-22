@@ -215,15 +215,14 @@ func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx i
 			)
 		}
 
-		// Extract base path for element count verification when needed:
-		// - cardinality:all requires count check for partial presence detection
-		// - exists/not_exists with any cardinality need count comparison
-		if cardinality == CardinalityAll ||
-			op == condition.OpExists ||
-			op == condition.OpNotExists {
-			baseExpr = condition.ExtractBasePath(expr)
-			// baseExpr may be nil for recursive descent - that's OK, we'll skip the count check
-		}
+		// Extract base path for element count verification. Every cardinality
+		// needs it: "all" and "any" compare leaf matches against the element
+		// count so per-element absence reads as unknown rather than being
+		// silently skipped, "none" uses it to distinguish a present-but-empty
+		// array (vacuously satisfied) from an absent one (unknown), and the
+		// presence operators need the count comparison directly.
+		baseExpr = condition.ExtractBasePath(expr)
+		// baseExpr may be nil for recursive descent - that's OK, we'll skip the count check
 	} else {
 		// Single cardinality requires single-value paths
 		var parseErr error

@@ -21,6 +21,7 @@ testdata/
 | `invalid-missing-id.yaml` | Invalid: missing required `id` field |
 | `invalid-both-modes.yaml` | Invalid: has both `any_of` and `all_of` |
 | `invalid-duplicate-id.yaml` | Invalid: duplicate requirement IDs |
+| `cloud-baseline.yaml` | Cloud posture rules over the normalized cloud-posture artifact; pairs with `missing-metrics-pack` |
 
 ## Overlays
 
@@ -40,6 +41,7 @@ Test packs are directory-based (not `.epack` files) for easier inspection and mo
 | `passing-pack/` | All artifacts present with passing values |
 | `failing-pack/` | Artifacts present but with failing values (MFA disabled, critical vulns) |
 | `partial-pack/` | Missing vuln-scan artifact (tests missing schema behavior) |
+| `missing-metrics-pack/` | One healthy account plus one whose metrics are absent (a failed account's stub entry): requirements score `unknown`, not pass or fail |
 
 ### Pack Structure
 
