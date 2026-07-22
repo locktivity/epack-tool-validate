@@ -588,11 +588,7 @@ func presenceOp(op condition.Operator) bool {
 	return op == condition.OpExists || op == condition.OpNotExists
 }
 
-// evaluateSingleValueCondition handles the default single-value case.
-func evaluateSingleValueCondition(cond *compiled.CompiledCondition, body any) (Verdict, *ConditionFailure) {
-	return evaluateSingleValueConditionAt(cond, body, time.Now())
-}
-
+// evaluateSingleValueConditionAt handles the default single-value case.
 func evaluateSingleValueConditionAt(cond *compiled.CompiledCondition, body any, now time.Time) (Verdict, *ConditionFailure) {
 	actual, err := condition.EvaluateJSONPath(cond.Expr, body)
 
@@ -632,11 +628,7 @@ func evaluateSingleValueConditionAt(cond *compiled.CompiledCondition, body any, 
 	return VerdictFalse, detail
 }
 
-// evaluateMultiValueCondition handles cardinality: all/any/none.
-func evaluateMultiValueCondition(cond *compiled.CompiledCondition, body any) (Verdict, *ConditionFailure) {
-	return evaluateMultiValueConditionAt(cond, body, time.Now())
-}
-
+// evaluateMultiValueConditionAt handles cardinality: all/any/none.
 func evaluateMultiValueConditionAt(cond *compiled.CompiledCondition, body any, now time.Time) (Verdict, *ConditionFailure) {
 	values := condition.EvaluateJSONPathMulti(cond.Expr, body)
 
