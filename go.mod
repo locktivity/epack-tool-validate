@@ -2,6 +2,8 @@ module github.com/locktivity/epack-tool-validate
 
 go 1.26.0
 
+toolchain go1.26.8
+
 require (
 	github.com/locktivity/epack v0.1.28
 	github.com/ohler55/ojg v1.24.1
