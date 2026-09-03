@@ -37,6 +37,27 @@ func (v *Validator) Validate(ctx *Context, profile *compiled.CompiledProfile, pa
 	}
 
 	for _, req := range profile.Requirements {
+		// Manual requirements are answered by asserted support and human
+		// review, never machine checks. They produce no satisfaction outcome
+		// and never affect the overall status.
+		if req.Manual {
+			result.Requirements = append(result.Requirements, RequirementResult{
+				ID:          req.ID,
+				Name:        req.Name,
+				Control:     req.Control,
+				Description: req.Description,
+				Category:    req.Category,
+				Status:      "manual",
+			})
+			result.Summary.Manual++
+			if req.Category != "" {
+				cat := result.ByCategory[req.Category]
+				cat.Manual++
+				result.ByCategory[req.Category] = cat
+			}
+			continue
+		}
+
 		reqResult := v.evaluateRequirement(ctx, &req, pack)
 		result.Requirements = append(result.Requirements, reqResult)
 
@@ -91,11 +112,12 @@ func (v *Validator) Validate(ctx *Context, profile *compiled.CompiledProfile, pa
 
 func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequirement, pack *PackIndex) RequirementResult {
 	result := RequirementResult{
-		ID:       req.ID,
-		Name:     req.Name,
-		Control:  req.Control,
-		Category: req.Category,
-		Mode:     req.Mode.String(), // "any_of" or "all_of"
+		ID:          req.ID,
+		Name:        req.Name,
+		Control:     req.Control,
+		Description: req.Description,
+		Category:    req.Category,
+		Mode:        req.Mode.String(), // "any_of" or "all_of"
 	}
 
 	// Evaluate all clauses

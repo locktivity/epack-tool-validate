@@ -35,13 +35,17 @@ type CompiledProfile struct {
 }
 
 // CompiledRequirement is a single requirement ready for evaluation.
+// A Manual requirement has no clauses: it is answered by asserted support
+// (control mapping entries) and human review, and is never scored.
 type CompiledRequirement struct {
-	ID       string
-	Control  string
-	Name     string
-	Category string
-	Mode     ClauseMode // Normalized - no any_of/all_of branching needed
-	Clauses  []CompiledClause
+	ID          string
+	Control     string
+	Name        string
+	Description string
+	Category    string
+	Manual      bool
+	Mode        ClauseMode // Normalized - no any_of/all_of branching needed
+	Clauses     []CompiledClause
 }
 
 // CompiledClause is a single satisfaction clause ready for evaluation.

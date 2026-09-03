@@ -149,6 +149,30 @@ up as fail over unknown over pass, and `summary.unknown` counts the
 requirements that could not be scored. Unknown requirements never appear in
 `key_failures`.
 
+## Manual Requirements and Asserted Support
+
+Not every requirement is machine-checkable. A written policy or a signed
+agreement has no artifact field to compare, so a requirement can declare
+`manual: true` instead of `satisfied_by`. Manual requirements report `status:
+"manual"`, count under `summary.manual`, and never affect the overall status;
+they are answered by asserted support and human review.
+
+Asserted support comes from control mapping artifacts
+(`evidencepack/control-mapping@v1`) sealed into the pack by its publisher.
+Each entry maps a requirement to a piece of evidence: an artifact (optionally
+a JSON pointer into it) or an indexed document (optionally a quoted passage in
+its extracted text). The tool joins entries to the profile's requirements,
+resolves each reference against the pack, and reports the results in the
+`asserted_support` output section. Any requirement can receive entries, so a
+machine-checked requirement shows its computed result and its mapped evidence
+side by side.
+
+Mappings are assertions, not verification results. A broken or stale mapping
+produces warnings (`MAPPING_UNRESOLVED`, `MAPPING_PROFILE_MISMATCH`,
+`INVALID_MAPPING_ENTRY`, `MANUAL_UNSUPPORTED`), never a failure. See
+[Configuration](configuration.md#control-mappings) for the join rules,
+resolution states, and output shape.
+
 ## Output
 
 The tool outputs a `validation.json` file containing:

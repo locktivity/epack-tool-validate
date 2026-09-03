@@ -133,8 +133,8 @@ func TestCompile_RequirementErrors(t *testing.T) {
 		if err == nil {
 			t.Error("Compile() should reject requirement without any_of or all_of")
 		}
-		if !strings.Contains(err.Error(), "must have either") {
-			t.Errorf("error should mention 'must have either', got: %v", err)
+		if !strings.Contains(err.Error(), "must have any_of, all_of, or manual") {
+			t.Errorf("error should mention the clause modes, got: %v", err)
 		}
 	})
 
@@ -185,7 +185,7 @@ func TestCompile_RequirementErrors(t *testing.T) {
 			t.Error("Compile() should reject requirement with empty clauses")
 		}
 		// Empty slice is treated as "must have either any_of or all_of"
-		if !strings.Contains(err.Error(), "must have either") {
+		if !strings.Contains(err.Error(), "must have any_of, all_of, or manual") {
 			t.Errorf("error should mention clause mode, got: %v", err)
 		}
 	})
@@ -477,5 +477,87 @@ func TestCompile_Origin(t *testing.T) {
 	}
 	if origin.SourceFile != "profiles/test-profile.yaml" {
 		t.Errorf("SourceFile = %q, want %q", origin.SourceFile, "profiles/test-profile.yaml")
+	}
+}
+
+func TestCompile_ManualRequirements(t *testing.T) {
+	t.Run("manual requirement compiles without clauses", func(t *testing.T) {
+		profile := makeValidRawProfile()
+		profile.Requirements = append(profile.Requirements, raw.RawRequirement{
+			ID:      "REQ-MANUAL",
+			Control: "PL-01",
+			Name:    "Information Security Policy",
+			Manual:  true,
+		})
+
+		compiled, err := Compile(profile, "test.yaml")
+		if err != nil {
+			t.Fatalf("Compile() unexpected error: %v", err)
+		}
+		req := compiled.Requirements[1]
+		if !req.Manual {
+			t.Error("Manual should be true")
+		}
+		if len(req.Clauses) != 0 {
+			t.Errorf("Clauses = %d, want 0", len(req.Clauses))
+		}
+	})
+
+	t.Run("manual with clauses is rejected", func(t *testing.T) {
+		profile := makeValidRawProfile()
+		profile.Requirements[0].Manual = true
+
+		_, err := Compile(profile, "test.yaml")
+		if err == nil || !strings.Contains(err.Error(), "cannot combine manual") {
+			t.Errorf("Compile() = %v, want manual/clauses conflict error", err)
+		}
+	})
+
+	t.Run("manual without id or control is rejected", func(t *testing.T) {
+		profile := makeValidRawProfile()
+		profile.Requirements = append(profile.Requirements, raw.RawRequirement{
+			Name:   "Unreachable",
+			Manual: true,
+		})
+
+		_, err := Compile(profile, "test.yaml")
+		if err == nil || !strings.Contains(err.Error(), "id or control") {
+			t.Errorf("Compile() = %v, want id-or-control error", err)
+		}
+	})
+
+	t.Run("manual with only a control is accepted", func(t *testing.T) {
+		profile := makeValidRawProfile()
+		profile.Requirements = append(profile.Requirements, raw.RawRequirement{
+			ID:      "REQ-CTRL-ONLY",
+			Control: "AC-02",
+			Manual:  true,
+		})
+
+		if _, err := Compile(profile, "test.yaml"); err != nil {
+			t.Errorf("Compile() unexpected error: %v", err)
+		}
+	})
+}
+
+func TestCompile_DescriptionPassthrough(t *testing.T) {
+	profile := makeValidRawProfile()
+	profile.Requirements[0].Description = "What the auditor expects to see."
+	profile.Requirements = append(profile.Requirements, raw.RawRequirement{
+		ID:          "REQ-MANUAL-DESC",
+		Control:     "PL-01",
+		Description: "Must name an approving officer.",
+		Manual:      true,
+	})
+
+	compiled, err := Compile(profile, "test.yaml")
+	if err != nil {
+		t.Fatalf("Compile() unexpected error: %v", err)
+	}
+	if compiled.Requirements[0].Description != "What the auditor expects to see." {
+		t.Errorf("machine requirement Description = %q", compiled.Requirements[0].Description)
+	}
+	if compiled.Requirements[1].Description != "Must name an approving officer." {
+		t.Errorf("manual requirement Description = %q", compiled.Requirements[1].Description)
 	}
 }

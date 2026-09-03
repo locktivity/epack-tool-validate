@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/locktivity/epack-tool-validate/internal/mapping"
 	"github.com/locktivity/epack-tool-validate/internal/profile"
 	"github.com/locktivity/epack-tool-validate/internal/profile/compiled"
 	"github.com/locktivity/epack-tool-validate/internal/resolution"
@@ -88,6 +89,16 @@ func run(ctx componentsdk.ToolContext) error {
 	v := validator.New()
 	validationCtx := validator.DefaultContext()
 	result := v.Validate(validationCtx, compiledProfile, packIndex, bundle.Digest())
+
+	// Attach asserted support from control mapping artifacts. Mappings are
+	// publisher assertions and never change the validation outcome.
+	mappingReport := mapping.Process(compiledProfile, bundle.Digest(), pack)
+	result.AssertedSupport = mappingReport.Support
+	result.Warnings = mappingReport.Warnings
+	result.Summary.Warnings = len(mappingReport.Warnings)
+	for _, warning := range mappingReport.Warnings {
+		ctx.Warn(warning.Code, warning.Message, warning.Path)
+	}
 
 	// Write validation output
 	return ctx.WriteOutput(OutputFile, result)

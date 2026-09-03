@@ -84,7 +84,9 @@ func applyModification(target *RawRequirement, mod *RawModify, sourceFile string
 	// ID stays the same (it's the lookup key)
 	target.Control = mod.Control
 	target.Name = mod.Name
+	target.Description = mod.Description
 	target.Category = mod.Category
+	target.Manual = mod.Manual
 	target.SourceFile = sourceFile // Track that this requirement came from an overlay
 	if mod.SatisfiedBy != nil {
 		target.SatisfiedBy = *mod.SatisfiedBy

@@ -15,6 +15,8 @@ See [docs/](docs/) for detailed documentation.
 - **Freshness Checks**: Ensure artifacts are recent enough to satisfy requirements
 - **Overlay Support**: Customize profiles with overlays (modify, skip, add requirements)
 - **Digest Verification**: Optionally verify profile integrity against manifest digests
+- **Manual Requirements**: Declare requirements answered by mapped evidence and human review (`manual: true`) instead of machine checks
+- **Asserted Support**: Report control mapping artifacts (`evidencepack/control-mapping@v1`) beside computed results, with per-entry evidence resolution
 
 ## Development
 

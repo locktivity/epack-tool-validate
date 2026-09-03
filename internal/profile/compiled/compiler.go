@@ -58,14 +58,39 @@ func Compile(profile *raw.RawProfile, defaultSourceFile string) (*CompiledProfil
 func compileRequirement(req *raw.RawRequirement, sourceFile string) (*CompiledRequirement, error) {
 	loc := diagnostic.Location{File: sourceFile, RequirementID: req.ID}
 
-	// Validate exactly one of any_of or all_of
+	// Validate exactly one of any_of, all_of, or manual
 	hasAnyOf := len(req.SatisfiedBy.AnyOf) > 0
 	hasAllOf := len(req.SatisfiedBy.AllOf) > 0
+
+	if req.Manual {
+		if hasAnyOf || hasAllOf {
+			return nil, diagnostic.Errorf(
+				diagnostic.CodeInvalidClauseMode, loc,
+				"requirement %s: cannot combine manual: true with satisfied_by clauses", req.ID,
+			)
+		}
+		// A manual requirement without an id or control can never receive
+		// asserted support, so it would be unreachable by any mapping entry.
+		if req.ID == "" && req.Control == "" {
+			return nil, diagnostic.Errorf(
+				diagnostic.CodeMissingField, loc,
+				"manual requirement must carry id or control",
+			)
+		}
+		return &CompiledRequirement{
+			ID:          req.ID,
+			Control:     req.Control,
+			Name:        req.Name,
+			Description: req.Description,
+			Category:    req.Category,
+			Manual:      true,
+		}, nil
+	}
 
 	if !hasAnyOf && !hasAllOf {
 		return nil, diagnostic.Errorf(
 			diagnostic.CodeInvalidClauseMode, loc,
-			"requirement %s: must have either any_of or all_of", req.ID,
+			"requirement %s: must have any_of, all_of, or manual: true", req.ID,
 		)
 	}
 	if hasAnyOf && hasAllOf {
@@ -76,10 +101,11 @@ func compileRequirement(req *raw.RawRequirement, sourceFile string) (*CompiledRe
 	}
 
 	compiled := &CompiledRequirement{
-		ID:       req.ID,
-		Control:  req.Control,
-		Name:     req.Name,
-		Category: req.Category,
+		ID:          req.ID,
+		Control:     req.Control,
+		Name:        req.Name,
+		Description: req.Description,
+		Category:    req.Category,
 	}
 
 	var rawClauses []raw.RawClause

@@ -3,15 +3,17 @@ package validator
 
 // Result is the overall validation result.
 type Result struct {
-	Status           string                     `json:"status"` // "pass" | "fail" | "unknown"
-	Profile          ProfileInfo                `json:"profile"`
-	ValidatedAt      string                     `json:"validated_at"`       // RFC3339
-	ValidatedAtLabel string                     `json:"validated_at_label"` // "just now", etc.
-	PackDigest       string                     `json:"pack_digest"`
-	Summary          Summary                    `json:"summary"`
-	Requirements     []RequirementResult        `json:"requirements"`
-	KeyFailures      []KeyFailure               `json:"key_failures,omitempty"`
-	ByCategory       map[string]CategorySummary `json:"by_category,omitempty"`
+	Status           string                            `json:"status"` // "pass" | "fail" | "unknown"
+	Profile          ProfileInfo                       `json:"profile"`
+	ValidatedAt      string                            `json:"validated_at"`       // RFC3339
+	ValidatedAtLabel string                            `json:"validated_at_label"` // "just now", etc.
+	PackDigest       string                            `json:"pack_digest"`
+	Summary          Summary                           `json:"summary"`
+	Requirements     []RequirementResult               `json:"requirements"`
+	KeyFailures      []KeyFailure                      `json:"key_failures,omitempty"`
+	ByCategory       map[string]CategorySummary        `json:"by_category,omitempty"`
+	AssertedSupport  map[string][]AssertedSupportEntry `json:"asserted_support,omitempty"`
+	Warnings         []WarningResult                   `json:"warnings,omitempty"`
 }
 
 // ProfileInfo describes the validated profile.
@@ -23,13 +25,16 @@ type ProfileInfo struct {
 }
 
 // Summary provides aggregate counts. Unknown counts requirements whose
-// evidence was absent: they are neither passed nor failed.
+// evidence was absent: they are neither passed nor failed. Manual counts
+// requirements answered by asserted support and human review; they are never
+// scored, so Total minus Manual is the machine-checked denominator.
 type Summary struct {
 	Total    int `json:"total"`
 	Passed   int `json:"passed"`
 	Failed   int `json:"failed"`
 	Missing  int `json:"missing"`
 	Unknown  int `json:"unknown"`
+	Manual   int `json:"manual,omitempty"`
 	Warnings int `json:"warnings"`
 }
 
@@ -39,6 +44,7 @@ type CategorySummary struct {
 	Failed  int `json:"failed"`
 	Missing int `json:"missing"`
 	Unknown int `json:"unknown"`
+	Manual  int `json:"manual,omitempty"`
 }
 
 // KeyFailure identifies a notable failure.
@@ -53,9 +59,10 @@ type RequirementResult struct {
 	ID          string         `json:"id"`
 	Name        string         `json:"name"`
 	Control     string         `json:"control,omitempty"`
+	Description string         `json:"description,omitempty"`
 	Category    string         `json:"category,omitempty"`
 	Severity    string         `json:"severity,omitempty"`     // "critical" | "high" | "medium" | "low"
-	Status      string         `json:"status"`                 // "pass" | "fail" | "unknown"
+	Status      string         `json:"status"`                 // "pass" | "fail" | "unknown" | "manual"
 	FailureKind string         `json:"failure_kind,omitempty"` // "missing" | "stale" | "freshness_missing" | "condition" | "insufficient_evidence"
 	Mode        string         `json:"mode,omitempty"`         // "any_of" | "all_of" - how clauses are evaluated
 	Expected    *ExpectedValue `json:"expected,omitempty"`     // Structured expected value
@@ -95,4 +102,63 @@ type ConditionCheck struct {
 type ExpectedValue struct {
 	Op    string `json:"op"`              // Operator: "eq", "neq", "gt", "gte", "lt", "lte", "exists", "not_exists", "max_age_days"
 	Value any    `json:"value,omitempty"` // Expected value (omitted for exists/not_exists)
+}
+
+// WarningResult is a non-fatal issue noted during validation. Warnings never
+// affect Status or any requirement outcome.
+type WarningResult struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Path    string `json:"path,omitempty"` // Artifact path the warning concerns
+}
+
+// AssertedSupportEntry echoes one control mapping entry
+// (evidencepack/control-mapping@v1) joined to a requirement of the validated
+// profile. Asserted support is publisher-authored and reporting-only: it never
+// changes any requirement outcome or the overall status.
+type AssertedSupportEntry struct {
+	Requirement   string           `json:"requirement,omitempty"`    // Join claimed by the entry: requirement id
+	Control       string           `json:"control,omitempty"`        // Join claimed by the entry: control identifier
+	Type          string           `json:"type,omitempty"`           // Join claimed by the entry: artifact schema
+	RequirementID string           `json:"requirement_id,omitempty"` // Joined requirement's id in this profile (absent if the join matched nothing)
+	Evidence      *SupportEvidence `json:"evidence,omitempty"`
+	Label         string           `json:"label,omitempty"`
+	Note          string           `json:"note,omitempty"`
+	MappedAt      string           `json:"mapped_at,omitempty"`
+	MappedBy      string           `json:"mapped_by,omitempty"`
+	Resolution    string           `json:"resolution"`       // "resolved" | "document_only" | "unresolved"
+	Value         any              `json:"value,omitempty"`  // Cited value when a pointer resolved to a scalar
+	Stale         bool             `json:"stale,omitempty"`  // Mapping's profile digest differs from the profile validated
+	Source        string           `json:"source,omitempty"` // Mapping artifact path in the pack
+}
+
+// SupportEvidence echoes a mapping entry's evidence reference.
+type SupportEvidence struct {
+	Artifact     string               `json:"artifact,omitempty"`
+	Pointer      string               `json:"pointer,omitempty"`
+	DocumentID   string               `json:"document_id,omitempty"`
+	Quote        *SupportQuote        `json:"quote,omitempty"`
+	TextPosition *SupportTextPosition `json:"text_position,omitempty"`
+	Table        *SupportTable        `json:"table,omitempty"`
+}
+
+// SupportQuote echoes a quote anchor.
+type SupportQuote struct {
+	Exact  string `json:"exact"`
+	Prefix string `json:"prefix,omitempty"`
+	Suffix string `json:"suffix,omitempty"`
+}
+
+// SupportTextPosition echoes a byte-offset anchor into a document's extracted text.
+type SupportTextPosition struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+// SupportTable echoes a table anchor.
+type SupportTable struct {
+	Sheet   string         `json:"sheet,omitempty"`
+	Where   map[string]any `json:"where,omitempty"`
+	Columns []string       `json:"columns,omitempty"`
+	Range   string         `json:"range,omitempty"`
 }

@@ -12,12 +12,17 @@ type RawProfile struct {
 }
 
 // RawRequirement represents a single requirement in the profile.
+// Exactly one of SatisfiedBy or Manual must be set: a requirement is either
+// machine-checked through clauses or answered by asserted support and human
+// review, never both.
 type RawRequirement struct {
 	ID          string         `yaml:"id"`
 	Control     string         `yaml:"control,omitempty"`
 	Name        string         `yaml:"name"`
+	Description string         `yaml:"description,omitempty"`
 	Category    string         `yaml:"category,omitempty"`
-	SatisfiedBy RawSatisfiedBy `yaml:"satisfied_by"`
+	SatisfiedBy RawSatisfiedBy `yaml:"satisfied_by,omitempty"`
+	Manual      bool           `yaml:"manual,omitempty"`
 
 	// SourceFile tracks where this requirement came from (base profile or overlay).
 	// Not populated from YAML - set programmatically during parsing and overlay application.
@@ -76,6 +81,8 @@ type RawModify struct {
 	ID          string          `yaml:"id"`
 	Control     string          `yaml:"control,omitempty"`
 	Name        string          `yaml:"name,omitempty"`
+	Description string          `yaml:"description,omitempty"`
 	Category    string          `yaml:"category,omitempty"`
 	SatisfiedBy *RawSatisfiedBy `yaml:"satisfied_by,omitempty"`
+	Manual      bool            `yaml:"manual,omitempty"`
 }

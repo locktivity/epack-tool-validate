@@ -2706,3 +2706,83 @@ func TestValidate_UnknownDoesNotOutrankFail(t *testing.T) {
 		t.Errorf("Summary = %+v, want Failed=1 Unknown=1", result.Summary)
 	}
 }
+
+func TestValidate_ManualRequirement(t *testing.T) {
+	v := New()
+	profile := &compiled.CompiledProfile{
+		ID:   "test-profile",
+		Name: "Test",
+		Requirements: []compiled.CompiledRequirement{
+			{
+				ID:       "REQ-001",
+				Name:     "MFA Coverage",
+				Category: "Access Control",
+				Mode:     compiled.ClauseModeAny,
+				Clauses: []compiled.CompiledClause{
+					{
+						Schema: "evidencepack/idp-posture@v1",
+						Conditions: []compiled.CompiledCondition{
+							makeCompiledCondition("$.mfa_coverage", "gte", 100.0),
+						},
+					},
+				},
+			},
+			{
+				ID:          "REQ-MANUAL",
+				Control:     "PL-01",
+				Name:        "Information Security Policy",
+				Description: "Current version, stating review cadence.",
+				Category:    "Access Control",
+				Manual:      true,
+			},
+		},
+	}
+
+	result := v.Validate(makeTestContext(), profile, makeTestPackIndex(), "sha256:test")
+
+	if result.Status != "pass" {
+		t.Errorf("Status = %q, want pass: a manual requirement never affects the outcome", result.Status)
+	}
+	if result.Summary.Total != 2 || result.Summary.Passed != 1 || result.Summary.Manual != 1 {
+		t.Errorf("Summary = %+v, want Total=2 Passed=1 Manual=1", result.Summary)
+	}
+
+	manual := result.Requirements[1]
+	if manual.Status != "manual" {
+		t.Errorf("Status = %q, want manual", manual.Status)
+	}
+	if manual.Mode != "" || len(manual.Checks) != 0 {
+		t.Errorf("manual requirement must carry no checks; Mode=%q Checks=%d", manual.Mode, len(manual.Checks))
+	}
+	if manual.Control != "PL-01" || manual.Name != "Information Security Policy" {
+		t.Errorf("identity fields should be echoed; got %+v", manual)
+	}
+	if manual.Description != "Current version, stating review cadence." {
+		t.Errorf("Description = %q, want the requirement's description echoed", manual.Description)
+	}
+
+	cat := result.ByCategory["Access Control"]
+	if cat.Passed != 1 || cat.Manual != 1 {
+		t.Errorf("ByCategory = %+v, want Passed=1 Manual=1", cat)
+	}
+}
+
+func TestValidate_AllManualProfilePassesVacuously(t *testing.T) {
+	v := New()
+	profile := &compiled.CompiledProfile{
+		ID:   "test-profile",
+		Name: "Test",
+		Requirements: []compiled.CompiledRequirement{
+			{ID: "REQ-M1", Name: "Policy Review", Manual: true},
+		},
+	}
+
+	result := v.Validate(makeTestContext(), profile, makeTestPackIndex(), "sha256:test")
+
+	if result.Status != "pass" {
+		t.Errorf("Status = %q, want pass: no machine-checked requirement failed or was unknown", result.Status)
+	}
+	if result.Summary.Manual != 1 || result.Summary.Passed != 0 {
+		t.Errorf("Summary = %+v", result.Summary)
+	}
+}

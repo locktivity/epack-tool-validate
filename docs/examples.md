@@ -357,6 +357,46 @@ requirements:
 | `any` | At least one item must satisfy (e.g., one region has HA) |
 | `none` | No item should satisfy (e.g., no public buckets) |
 
+### Manual Requirements with Mapped Evidence
+
+A requirement no machine check answers declares `manual: true`. It is
+answered by control mapping entries sealed into the pack and by human review:
+
+```yaml
+requirements:
+  - id: GOV-001
+    name: Information Security Policy
+    control: PL-01
+    category: Governance
+    manual: true
+```
+
+When the pack carries a control mapping artifact
+(`evidencepack/control-mapping@v1`), its entries appear in the
+`asserted_support` section of `validation.json`:
+
+```json
+"asserted_support": {
+  "my-compliance-profile": [
+    {
+      "control": "PL-01",
+      "requirement_id": "GOV-001",
+      "evidence": {
+        "document_id": "doc-8f2c1a9e",
+        "quote": {"exact": "reviewed at least annually and approved by the CISO"}
+      },
+      "label": "Information Security Policy.pdf",
+      "resolution": "resolved",
+      "source": "artifacts/control-mappings.json"
+    }
+  ]
+}
+```
+
+The manual requirement reports `status: "manual"` and never affects the
+overall status. See [Configuration](configuration.md#control-mappings) for
+the join rules, resolution states, and warning codes.
+
 ## Example Overlays
 
 ### Skip Manual Requirements

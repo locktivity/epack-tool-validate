@@ -286,3 +286,28 @@ modify:
 		}
 	})
 }
+
+func TestParseProfileFromBytes_AcceptsRequirementDescriptionAndManual(t *testing.T) {
+	yaml := `
+id: test-profile
+name: Test Profile
+version: "1.0.0"
+requirements:
+  - id: REQ-001
+    name: Information Security Policy
+    control: PL-01
+    description: Current version, stating review cadence and the approving officer.
+    manual: true
+`
+	profile, err := ParseProfileFromBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("ParseProfileFromBytes() error: %v", err)
+	}
+	req := profile.Requirements[0]
+	if req.Description != "Current version, stating review cadence and the approving officer." {
+		t.Errorf("Description = %q", req.Description)
+	}
+	if !req.Manual {
+		t.Error("Manual should be true")
+	}
+}

@@ -65,6 +65,8 @@ requirements:
     name: Access Control Policy   # Requirement name
     control: CC6.1                # Optional control reference
     category: Access Control      # Optional category for grouping
+    description: >                # Optional prose: what satisfies this
+      Policy must name an approving officer and a review cadence.
     satisfied_by:
       any_of:                     # OR: any clause can satisfy
         - type: evidencepack/idp-posture@v1
@@ -155,6 +157,29 @@ metadata_conditions:
 **Partial presence detection**: For `cardinality: all`, the validator checks that ALL array elements have the field. If some elements are missing the field entirely, validation fails. For example, `$.accounts[*].mfa_enabled` with `cardinality: all` will fail if 2 out of 3 accounts have `mfa_enabled: true` but the third account has no `mfa_enabled` field - the result will show "2 of 3 elements have field".
 
 **Note**: Partial presence detection requires a simple wildcard path (e.g., `$.accounts[*].field`). Recursive descent paths (`$..field`) cannot detect partial presence since there's no single base array to count.
+
+### Manual Requirements
+
+A requirement with `manual: true` declares that no machine check answers it. It is answered by asserted support (control mapping entries, see [Control Mappings](#control-mappings)) and human review.
+
+```yaml
+requirements:
+  - id: REQ-POLICY
+    name: Information Security Policy
+    control: PL-01
+    category: Governance
+    description: Current version, stating review cadence of at least annually.
+    manual: true
+```
+
+The optional `description` carries what would satisfy the requirement, in prose. It is echoed on each requirement in `validation.json`, so a reviewer sees the acceptance criteria beside the outcome and any asserted support.
+
+Rules:
+
+- A requirement must have exactly one of `any_of`, `all_of`, or `manual: true`.
+- A manual requirement must carry `id` or `control`; without either it could never receive asserted support.
+- Manual requirements are never scored. They report `status: "manual"`, count under `summary.manual`, and never affect the overall status. `summary.total` minus `summary.manual` is the machine-checked denominator.
+- A manual requirement with no asserted support entries produces a `MANUAL_UNSUPPORTED` warning.
 
 ## Overlay File Format
 
@@ -264,6 +289,62 @@ tools:
       overlays:
         - profiles/overlays/strict.yaml
 ```
+
+## Control Mappings
+
+When the pack contains control mapping artifacts (schema `evidencepack/control-mapping@v1`), the tool reports their entries as asserted support beside its computed results. Mappings are publisher assertions: they never change any requirement outcome or the overall status. No configuration is needed; mapping support is automatic.
+
+Each mapping entry references one requirement of the validated profile and one piece of evidence in the pack. The tool joins entries to requirements:
+
+| Entry field | Joins to |
+|-------------|----------|
+| `requirement` | The requirement with that `id` |
+| `control` | The first requirement with that `control` value |
+| `type` | The single requirement whose clauses use that artifact schema (ambiguous types match nothing) |
+
+Mappings whose `profile.id` names a different profile are ignored. A mapping whose `profile.digest` differs from the validated profile's digest is still reported, with each entry marked `"stale": true` and a `MAPPING_PROFILE_MISMATCH` warning.
+
+Evidence references resolve best-effort against the pack:
+
+- `artifact` resolves against the pack's artifact paths. An RFC 6901 `pointer` resolves into the artifact's JSON content; when it names a scalar, the entry carries the cited value in `value`.
+- `document_id` resolves through a document index artifact (schema `evidencepack/document-index@v1`). A `quote` anchor is searched in the document's extracted text; a `table` anchor resolves at document level, since packs carry no tabular extraction yet.
+
+Each reported entry carries a `resolution` state:
+
+| State | Meaning |
+|-------|---------|
+| `resolved` | Target (and anchor, where an extraction exists) found |
+| `document_only` | Document found, but the anchor's extraction is absent |
+| `unresolved` | Target or anchor not found in the pack |
+
+The `asserted_support` output section is keyed by profile ID:
+
+```json
+"asserted_support": {
+  "my-security-profile": [
+    {
+      "requirement": "REQ-001",
+      "requirement_id": "REQ-001",
+      "evidence": {"artifact": "artifacts/idp-posture.json", "pointer": "/mfa_coverage"},
+      "label": "MFA coverage from the IdP export",
+      "resolution": "resolved",
+      "value": 100,
+      "source": "artifacts/control-mappings.json"
+    }
+  ]
+}
+```
+
+`requirement`, `control`, or `type` echoes the join the entry claimed; `requirement_id` is the joined requirement's id in this profile and is absent when the claim matched nothing.
+
+Mapping issues surface as warnings, in the `warnings` array of `validation.json` and in the run's `result.json`. They are never errors and never affect `status`:
+
+| Code | Meaning |
+|------|---------|
+| `INVALID_MAPPING_ENTRY` | Entry violates the mapping schema's constraints; the entry is reported in the warning and skipped |
+| `MAPPING_UNRESOLVED` | Entry cites an artifact, document, pointer, or quote not found in the pack, or references a requirement not present in the profile |
+| `MAPPING_PROFILE_MISMATCH` | Mapping's profile digest differs from the profile validated |
+| `MANUAL_UNSUPPORTED` | A `manual: true` requirement has no asserted support entries |
 
 ## Output Files
 
