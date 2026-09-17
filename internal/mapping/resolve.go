@@ -142,19 +142,59 @@ func resolveDocument(ev *Evidence, pack PackReader, docs map[string]documentInfo
 // contextualized search comes first, then the bare passage, then the byte
 // offsets recorded for this sealed version.
 func quoteFound(text []byte, quote *Quote, pos *TextPosition) bool {
-	s := string(text)
+	plain := documentPlainText(text)
+	// Extraction preserves layout whitespace (line breaks, indentation) that
+	// a quote captured from a viewer's text layer cannot reproduce, so both
+	// sides compare with runs of whitespace collapsed to single spaces.
+	s := collapseWhitespace(plain)
 	if quote.Prefix != "" || quote.Suffix != "" {
-		if strings.Contains(s, quote.Prefix+quote.Exact+quote.Suffix) {
+		if strings.Contains(s, collapseWhitespace(quote.Prefix+quote.Exact+quote.Suffix)) {
 			return true
 		}
 	}
-	if strings.Contains(s, quote.Exact) {
+	if strings.Contains(s, collapseWhitespace(quote.Exact)) {
 		return true
 	}
-	if pos != nil && pos.Start >= 0 && pos.End <= len(text) && pos.Start <= pos.End {
-		return s[pos.Start:pos.End] == quote.Exact
+	// The two sides come from different extractors, which disagree about
+	// spacing where a PDF splits a line into text items: one reads
+	// "Report date2025-12-16" where a viewer's text layer reads
+	// "Report date 2025-12-16". Dropping whitespace from both settles it.
+	if strings.Contains(stripWhitespace(plain), stripWhitespace(quote.Exact)) {
+		return true
+	}
+	if pos != nil && pos.Start >= 0 && pos.End <= len(plain) && pos.Start <= pos.End {
+		return plain[pos.Start:pos.End] == quote.Exact
 	}
 	return false
+}
+
+// The extracted text a quote is matched against. A document-text artifact is
+// JSON, so its bytes hold escaped newlines and quotes, and searching them
+// directly can only ever match a passage that sits on one line. Bytes of any
+// other shape are matched as they arrived.
+func documentPlainText(data []byte) string {
+	var document struct {
+		Chunks []struct {
+			Text string `json:"text"`
+		} `json:"chunks"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil || len(document.Chunks) == 0 {
+		return string(data)
+	}
+
+	parts := make([]string, 0, len(document.Chunks))
+	for _, chunk := range document.Chunks {
+		parts = append(parts, chunk.Text)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func collapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func stripWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), "")
 }
 
 // resolvePointer walks an RFC 6901 JSON Pointer through decoded JSON.

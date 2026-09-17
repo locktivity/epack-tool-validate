@@ -397,3 +397,48 @@ func TestProcess_UnparsableMappingWarns(t *testing.T) {
 		t.Errorf("expected INVALID_MAPPING_ENTRY for the unparsable artifact; warnings = %+v", report.Warnings)
 	}
 }
+
+func TestQuoteFound_CollapsesWhitespace(t *testing.T) {
+	text := []byte("This policy is\nreviewed   at least\nannually and approved by the CISO.")
+	quote := &Quote{Exact: "reviewed at least annually", Prefix: "policy is ", Suffix: " and approved"}
+	if !quoteFound(text, quote, nil) {
+		t.Fatalf("expected collapsed-whitespace quote to resolve")
+	}
+	if quoteFound(text, &Quote{Exact: "reviewed on Tuesdays"}, nil) {
+		t.Fatalf("expected absent quote to stay unresolved")
+	}
+}
+
+func TestQuoteFound_ReadsTheTextOutOfTheArtifactJSON(t *testing.T) {
+	// The shape a document-text artifact actually has in a pack: the passage
+	// crosses a line break, which JSON carries as an escape, not whitespace.
+	text := []byte(`{"document_id":"doc-1","page_count":1,"chunks":[` +
+		`{"chunk_id":0,"page":1,"text":"This report is based on the evidence provided\nduring the engagement window."}]}`)
+
+	quote := &Quote{Exact: "based on the evidence provided during the engagement window"}
+	if !quoteFound(text, quote, nil) {
+		t.Fatalf("expected a passage crossing a line break to resolve")
+	}
+	if quoteFound(text, &Quote{Exact: "based on the evidence we invented"}, nil) {
+		t.Fatalf("expected an absent passage to stay unresolved")
+	}
+}
+
+func TestQuoteFound_SpanningChunks(t *testing.T) {
+	text := []byte(`{"chunks":[{"chunk_id":0,"page":1,"text":"powers over"},` +
+		`{"chunk_id":1,"page":2,"text":"business affairs"}]}`)
+
+	if !quoteFound(text, &Quote{Exact: "powers over business affairs"}, nil) {
+		t.Fatalf("expected a passage crossing two chunks to resolve")
+	}
+}
+
+func TestQuoteFound_SpacingAtTextItemBoundaries(t *testing.T) {
+	// The collector's extractor runs adjacent items together; the viewer's
+	// text layer puts a space between them.
+	text := []byte(`{"chunks":[{"chunk_id":0,"page":1,"text":"Version1.0\nReport date2025-12-16"}]}`)
+
+	if !quoteFound(text, &Quote{Exact: "Report date 2025-12-16"}, nil) {
+		t.Fatalf("expected a passage to resolve despite item-boundary spacing")
+	}
+}
