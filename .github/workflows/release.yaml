@@ -126,6 +126,10 @@ jobs:
           files: release/*
           generate_release_notes: true
           draft: false
+          # A re-run after a failed upload is filling gaps, not replacing
+          # bytes: overwriting deletes each asset before re-uploading it, so
+          # one flaky upload leaves the release short an asset it already had.
+          overwrite_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
