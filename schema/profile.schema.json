@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/locktivity/epack-tool-validate/main/schema/profile.schema.json",
+  "title": "epack validation profile",
+  "description": "A profile states the controls an evidence pack is checked against. Each requirement is a control: its name is the statement a reviewer reads, and its clauses are the tests that verify it against artifacts in the pack.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "version", "requirements"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable identifier for the profile."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable profile name."
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Profile version. Quote it in YAML so 1.0 stays a string."
+    },
+    "description": {
+      "type": "string",
+      "description": "What the profile covers."
+    },
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/requirement" }
+    }
+  },
+  "$defs": {
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique within the profile. Results, overlays and control mappings refer to it, so keep it stable once published."
+        },
+        "control": {
+          "type": "string",
+          "description": "Framework control this requirement answers, such as CC6.1."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The control statement a reviewer reads, such as \"MFA is enforced for every user\"."
+        },
+        "description": {
+          "type": "string",
+          "description": "What satisfies the requirement, in prose. Echoed beside the result."
+        },
+        "category": {
+          "type": "string",
+          "description": "Grouping used in result summaries."
+        },
+        "satisfied_by": { "$ref": "#/$defs/satisfied_by" },
+        "manual": {
+          "type": "boolean",
+          "description": "True when no machine check answers the requirement. It is answered by control mappings and human review, and is never scored."
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["id", "satisfied_by"],
+          "properties": { "manual": { "const": false } }
+        },
+        {
+          "required": ["manual"],
+          "properties": { "manual": { "const": true } },
+          "not": { "required": ["satisfied_by"] },
+          "anyOf": [{ "required": ["id"] }, { "required": ["control"] }]
+        }
+      ]
+    },
+    "satisfied_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "description": "Exactly one of any_of or all_of.",
+      "properties": {
+        "any_of": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/clause" },
+          "description": "The requirement is met when any clause matches."
+        },
+        "all_of": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/clause" },
+          "description": "The requirement is met when every clause matches."
+        }
+      }
+    },
+    "clause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Artifact type the clause reads, such as evidencepack/idp-posture@v1."
+        },
+        "severity": {
+          "enum": ["critical", "high", "medium", "low", ""],
+          "description": "Set on a clause that describes a failure. A matching clause with a severity marks the requirement as failing at that severity. Leave empty for a clause that describes a pass."
+        },
+        "freshness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_age_days"],
+          "properties": {
+            "max_age_days": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The artifact must have been collected within this many days."
+            }
+          }
+        },
+        "metadata_conditions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/condition" },
+              "description": "Every condition must hold for the clause to match."
+            }
+          }
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "op"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^\\$",
+          "description": "JSONPath into the artifact, such as $.user_security.mfa_coverage_pct. Paths with [*] or .. need a cardinality."
+        },
+        "op": {
+          "enum": ["eq", "==", "equals", "neq", "!=", "not_equals", "gt", ">", "gte", ">=", "lt", "<", "lte", "<=", "exists", "not_exists", "max_age_days"],
+          "description": "Comparison. Numeric operators compare numbers only; eq and neq compare exactly, with no conversion between strings and numbers."
+        },
+        "value": {
+          "description": "Value to compare against. Not used by exists and not_exists."
+        },
+        "cardinality": {
+          "enum": ["", "single", "all", "any", "none"],
+          "description": "How a multi-value path is scored: all values, any value, or no value must satisfy the condition."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "op": { "enum": ["exists", "not_exists"] } } },
+          "else": { "required": ["value"] }
+        },
+        {
+          "if": { "properties": { "op": { "const": "max_age_days" } } },
+          "then": { "properties": { "value": { "type": "number", "minimum": 0 } } }
+        },
+        {
+          "if": { "properties": { "op": { "enum": ["gt", ">", "gte", ">=", "lt", "<", "lte", "<="] } } },
+          "then": { "properties": { "value": { "type": "number" } } }
+        },
+        {
+          "if": {
+            "required": ["path"],
+            "properties": { "path": { "pattern": "\\[\\*\\]|\\.\\.|\\[\\?|\\[-?[0-9]*:" } }
+          },
+          "then": {
+            "required": ["cardinality"],
+            "properties": { "cardinality": { "enum": ["all", "any", "none"] } }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/locktivity/epack-tool-validate/main/schema/overlay.schema.json",
+  "title": "epack validation profile overlay",
+  "description": "An overlay adjusts a base profile for one pipeline: it replaces requirements, skips them, or adds new ones, so base updates keep flowing.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "modify": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/modify" },
+      "description": "Requirements to replace. Each entry fully replaces the requirement with the same id: fields it leaves out become empty, so restate name and satisfied_by."
+    },
+    "skip": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Ids of requirements to drop."
+    },
+    "add": {
+      "type": "array",
+      "items": { "$ref": "profile.schema.json#/$defs/requirement" },
+      "description": "Requirements to append."
+    }
+  },
+  "$defs": {
+    "modify": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Id of the requirement to replace." },
+        "control": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "satisfied_by": { "$ref": "profile.schema.json#/$defs/satisfied_by" },
+        "manual": { "type": "boolean" }
+      }
+    }
+  }
+}

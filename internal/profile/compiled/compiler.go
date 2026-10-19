@@ -18,44 +18,70 @@ func Compile(profile *raw.RawProfile, defaultSourceFile string) (*CompiledProfil
 	if profile == nil {
 		return nil, fmt.Errorf("profile is nil")
 	}
+	compiled, diags := compile(profile, defaultSourceFile, true)
+	if len(diags) > 0 {
+		return nil, diags[0]
+	}
+	return compiled, nil
+}
 
+// Diagnose runs the same checks as Compile but reports every failure in
+// document order instead of stopping at the first.
+func Diagnose(profile *raw.RawProfile, defaultSourceFile string) []diagnostic.Diagnostic {
+	if profile == nil {
+		return nil
+	}
+	_, diags := compile(profile, defaultSourceFile, false)
+	return diags
+}
+
+func compile(profile *raw.RawProfile, defaultSourceFile string, stopAtFirst bool) (*CompiledProfile, []diagnostic.Diagnostic) {
 	compiled := &CompiledProfile{
 		ID:      profile.ID,
 		Name:    profile.Name,
 		Version: profile.Version,
 	}
 
-	// Track requirement IDs for uniqueness check
+	var diags []diagnostic.Diagnostic
 	seenIDs := make(map[string]bool)
 
 	for _, req := range profile.Requirements {
-		// Use requirement's SourceFile if set, otherwise fall back to default
 		sourceFile := req.SourceFile
 		if sourceFile == "" {
 			sourceFile = defaultSourceFile
 		}
 
-		// Check ID uniqueness
 		if seenIDs[req.ID] {
-			return nil, diagnostic.Errorf(
+			diags = append(diags, diagnostic.Errorf(
 				diagnostic.CodeDuplicateRequirement,
 				diagnostic.Location{File: sourceFile, RequirementID: req.ID},
 				"duplicate requirement ID: %s", req.ID,
-			)
+			))
+			if stopAtFirst {
+				return nil, diags
+			}
+			continue
 		}
 		seenIDs[req.ID] = true
 
-		compiledReq, err := compileRequirement(&req, sourceFile)
-		if err != nil {
-			return nil, err
+		compiledReq, reqDiags := compileRequirement(&req, sourceFile)
+		if len(reqDiags) > 0 {
+			diags = append(diags, reqDiags...)
+			if stopAtFirst {
+				return nil, diags
+			}
+			continue
 		}
 		compiled.Requirements = append(compiled.Requirements, *compiledReq)
 	}
 
+	if len(diags) > 0 {
+		return nil, diags
+	}
 	return compiled, nil
 }
 
-func compileRequirement(req *raw.RawRequirement, sourceFile string) (*CompiledRequirement, error) {
+func compileRequirement(req *raw.RawRequirement, sourceFile string) (*CompiledRequirement, []diagnostic.Diagnostic) {
 	loc := diagnostic.Location{File: sourceFile, RequirementID: req.ID}
 
 	// Validate exactly one of any_of, all_of, or manual
@@ -64,18 +90,18 @@ func compileRequirement(req *raw.RawRequirement, sourceFile string) (*CompiledRe
 
 	if req.Manual {
 		if hasAnyOf || hasAllOf {
-			return nil, diagnostic.Errorf(
+			return nil, []diagnostic.Diagnostic{diagnostic.Errorf(
 				diagnostic.CodeInvalidClauseMode, loc,
 				"requirement %s: cannot combine manual: true with satisfied_by clauses", req.ID,
-			)
+			)}
 		}
 		// A manual requirement without an id or control can never receive
 		// asserted support, so it would be unreachable by any mapping entry.
 		if req.ID == "" && req.Control == "" {
-			return nil, diagnostic.Errorf(
+			return nil, []diagnostic.Diagnostic{diagnostic.Errorf(
 				diagnostic.CodeMissingField, loc,
 				"manual requirement must carry id or control",
-			)
+			)}
 		}
 		return &CompiledRequirement{
 			ID:          req.ID,
@@ -88,16 +114,16 @@ func compileRequirement(req *raw.RawRequirement, sourceFile string) (*CompiledRe
 	}
 
 	if !hasAnyOf && !hasAllOf {
-		return nil, diagnostic.Errorf(
+		return nil, []diagnostic.Diagnostic{diagnostic.Errorf(
 			diagnostic.CodeInvalidClauseMode, loc,
 			"requirement %s: must have any_of, all_of, or manual: true", req.ID,
-		)
+		)}
 	}
 	if hasAnyOf && hasAllOf {
-		return nil, diagnostic.Errorf(
+		return nil, []diagnostic.Diagnostic{diagnostic.Errorf(
 			diagnostic.CodeInvalidClauseMode, loc,
 			"requirement %s: cannot have both any_of and all_of", req.ID,
-		)
+		)}
 	}
 
 	compiled := &CompiledRequirement{
@@ -118,24 +144,29 @@ func compileRequirement(req *raw.RawRequirement, sourceFile string) (*CompiledRe
 	}
 
 	if len(rawClauses) == 0 {
-		return nil, diagnostic.Errorf(
+		return nil, []diagnostic.Diagnostic{diagnostic.Errorf(
 			diagnostic.CodeEmptyClauses, loc,
 			"requirement %s: has no clauses", req.ID,
-		)
+		)}
 	}
 
+	var diags []diagnostic.Diagnostic
 	for i, clause := range rawClauses {
-		compiledClause, err := compileClause(&clause, req.ID, i, sourceFile)
-		if err != nil {
-			return nil, err
+		compiledClause, clauseDiags := compileClause(&clause, req.ID, i, sourceFile)
+		if len(clauseDiags) > 0 {
+			diags = append(diags, clauseDiags...)
+			continue
 		}
 		compiled.Clauses = append(compiled.Clauses, *compiledClause)
+	}
+	if len(diags) > 0 {
+		return nil, diags
 	}
 
 	return compiled, nil
 }
 
-func compileClause(clause *raw.RawClause, reqID string, idx int, sourceFile string) (*CompiledClause, error) {
+func compileClause(clause *raw.RawClause, reqID string, idx int, sourceFile string) (*CompiledClause, []diagnostic.Diagnostic) {
 	loc := diagnostic.Location{
 		File:          sourceFile,
 		RequirementID: reqID,
@@ -144,19 +175,19 @@ func compileClause(clause *raw.RawClause, reqID string, idx int, sourceFile stri
 
 	// Validate type (schema) is present
 	if clause.Type == "" {
-		return nil, diagnostic.Errorf(
+		return nil, []diagnostic.Diagnostic{diagnostic.Errorf(
 			diagnostic.CodeMissingType, loc,
 			"requirement %s, clause %d: missing type (schema)", reqID, idx,
-		)
+		)}
 	}
 
 	// Validate severity
 	if !ValidSeverities[clause.Severity] {
-		return nil, diagnostic.Errorf(
+		return nil, []diagnostic.Diagnostic{diagnostic.Errorf(
 			diagnostic.CodeInvalidSeverity, loc,
 			"requirement %s, clause %d: invalid severity %q (must be critical, high, medium, low, or empty)",
 			reqID, idx, clause.Severity,
-		)
+		)}
 	}
 
 	compiled := &CompiledClause{
@@ -176,53 +207,62 @@ func compileClause(clause *raw.RawClause, reqID string, idx int, sourceFile stri
 	}
 
 	// Compile conditions
+	var diags []diagnostic.Diagnostic
 	if clause.MetadataConditions != nil {
 		for j, cond := range clause.MetadataConditions.All {
-			compiledCond, err := compileCondition(&cond, reqID, idx, j, sourceFile)
-			if err != nil {
-				return nil, err
+			compiledCond, condDiag := compileCondition(&cond, reqID, idx, j, sourceFile)
+			if condDiag != nil {
+				diags = append(diags, *condDiag)
+				continue
 			}
 			compiled.Conditions = append(compiled.Conditions, *compiledCond)
 		}
+	}
+	if len(diags) > 0 {
+		return nil, diags
 	}
 
 	return compiled, nil
 }
 
-func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx int, sourceFile string) (*CompiledCondition, error) {
+func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx int, sourceFile string) (*CompiledCondition, *diagnostic.Diagnostic) {
 	loc := diagnostic.Location{
-		File:          sourceFile,
-		RequirementID: reqID,
-		ClauseIndex:   clauseIdx,
+		File:           sourceFile,
+		RequirementID:  reqID,
+		ClauseIndex:    clauseIdx,
+		ConditionIndex: condIdx,
 	}
 
 	// Parse operator
 	op, err := condition.ParseOperator(cond.Op)
 	if err != nil {
-		return nil, diagnostic.Errorf(
+		d := diagnostic.Errorf(
 			diagnostic.CodeInvalidOperator, loc,
 			"requirement %s, clause %d, condition %d: %v", reqID, clauseIdx, condIdx, err,
 		)
+		return nil, &d
 	}
 
 	if op == condition.OpMaxAgeDays {
 		if maxDays, numOK := condition.NormalizeNumeric(cond.Value); !numOK || maxDays < 0 {
-			return nil, diagnostic.Errorf(
+			d := diagnostic.Errorf(
 				diagnostic.CodeInvalidFieldType, loc,
 				"requirement %s, clause %d, condition %d: max_age_days requires a non-negative numeric value, got %v",
 				reqID, clauseIdx, condIdx, cond.Value,
 			)
+			return nil, &d
 		}
 	}
 
 	// Parse cardinality
 	cardinality, ok := ValidCardinalities[cond.Cardinality]
 	if !ok {
-		return nil, diagnostic.Errorf(
+		d := diagnostic.Errorf(
 			diagnostic.CodeInvalidCardinality, loc,
 			"requirement %s, clause %d, condition %d: invalid cardinality %q (must be all, any, none, or empty)",
 			reqID, clauseIdx, condIdx, cond.Cardinality,
 		)
+		return nil, &d
 	}
 
 	// Parse JSONPath - allow multi-value if cardinality is specified
@@ -235,10 +275,11 @@ func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx i
 		var parseErr error
 		expr, isMulti, parseErr = condition.ParseJSONPathMulti(cond.Path)
 		if parseErr != nil {
-			return nil, diagnostic.Errorf(
+			d := diagnostic.Errorf(
 				diagnostic.CodeInvalidJSONPath, loc,
 				"requirement %s, clause %d, condition %d: %v", reqID, clauseIdx, condIdx, parseErr,
 			)
+			return nil, &d
 		}
 
 		// Extract base path for element count verification. Every cardinality
@@ -254,10 +295,11 @@ func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx i
 		var parseErr error
 		expr, parseErr = condition.ParseJSONPath(cond.Path)
 		if parseErr != nil {
-			return nil, diagnostic.Errorf(
+			d := diagnostic.Errorf(
 				diagnostic.CodeInvalidJSONPath, loc,
 				"requirement %s, clause %d, condition %d: %v", reqID, clauseIdx, condIdx, parseErr,
 			)
+			return nil, &d
 		}
 		isMulti = false
 	}

@@ -6,7 +6,7 @@
 
 | Requirement | Value |
 |-------------|-------|
-| Requires Pack | Yes |
+| Requires Pack | No. With a pack it validates; without one it lints the profile |
 | Network Access | No |
 
 ## Configuration Options
@@ -16,6 +16,7 @@
 | `profile` | string | Yes* | Path to a single profile YAML file |
 | `profiles` | []string | Yes* | List of profile paths (MVP: only one supported) |
 | `overlays` | []string | No | List of overlay YAML files to apply |
+| `schemas` | map | No | Artifact type to JSON Schema path, used by lint. Adds types the tool does not bundle and replaces bundled schemas for the types it names |
 
 *Either `profile` or `profiles` must be specified. If both are provided, `profiles` takes precedence.
 
@@ -50,6 +51,40 @@ tools:
         - profiles/overlays/us-region.yaml
 ```
 
+### Linting a Profile
+
+Run the tool without a pack to lint a profile before it ever meets evidence:
+
+```bash
+epack tool validate profiles/security-policy.yaml
+```
+
+With no arguments, lint reads `profile`, `overlays` and `schemas` from the tool configuration. Arguments replace them:
+
+```bash
+epack tool validate profiles/draft.yaml --overlay profiles/overlays/production.yaml --schema acme/thing@v1=schemas/thing.json
+```
+
+Lint reports every problem it finds, not just the first. Findings print to stderr and are written to `lint.json`. Errors mean the profile will not evaluate as written. Warnings mean it will, but probably not as intended.
+
+| Code | Severity | Meaning |
+|------|----------|---------|
+| `UNKNOWN_PATH` | error | The path names a field the artifact's schema does not declare. Includes the declared fields at that level and the closest declared paths |
+| `PATH_SHAPE` | error | The path indexes something that is not an array, or reads a field of something that is not an object |
+| `OPERATOR_TYPE_MISMATCH` | error | A numeric operator on a non-numeric field, or `max_age_days` on a field that is not a date string |
+| `NEVER_MATCHES` | error | `eq` against a value the field can never hold: the wrong type, a value outside its allowed values, or a whole object. Also a numeric operator given a non-numeric value |
+| `MISSING_VALUE` | error | A comparison with no `value` |
+| `MISSING_FIELD` | error | The profile has no version, or a requirement has no `id` or `name` |
+| `ALWAYS_MATCHES` | warning | `neq` against a value the field can never hold |
+| `VACUOUS_PASS` | warning | A condition that passes when there is nothing to test: `cardinality: none` over an empty list, `exists` with `none`, `not_exists` with `all`, or a single `not_exists`, which also passes when the field was never collected |
+| `FRESHNESS_IGNORED` | warning | `freshness.max_age_days` below 1, which is ignored |
+| `TYPE_UNCHECKED` | warning | No schema is known for the clause's type, so its paths were not checked. Pass one under `schemas` |
+| `PATH_UNCHECKED` | warning | The path uses recursive descent, a filter or a union, which cannot be checked statically |
+
+Compiler errors such as `INVALID_OPERATOR` and `INVALID_CARDINALITY` are reported too, every one of them in a single run.
+
+The tool bundles schemas for `evidencepack/idp-posture@v1`, `cloud-posture@v1`, `vcs-posture@v1`, `email-dns@v1` and `tls@v1`. Any other type needs a schema under `schemas` before its paths are checked.
+
 ## Profile File Format
 
 Profiles are YAML files with the following structure:
@@ -62,20 +97,31 @@ description: Example profile      # Optional description
 
 requirements:
   - id: REQ-001                   # Unique requirement ID
-    name: Access Control Policy   # Requirement name
+    name: MFA is enforced for every user  # The statement a reviewer reads
     control: CC6.1                # Optional control reference
     category: Access Control      # Optional category for grouping
     description: >                # Optional prose: what satisfies this
-      Policy must name an approving officer and a review cadence.
+      Every active user is enrolled in multi-factor authentication.
     satisfied_by:
       any_of:                     # OR: any clause can satisfy
         - type: evidencepack/idp-posture@v1
           metadata_conditions:
             all:                  # AND: all conditions must match
-              - path: $.has_access_policy
-                op: eq
-                value: true
+              - path: $.user_security.mfa_coverage_pct
+                op: gte
+                value: 100
 ```
+
+### Editor and Agent Support
+
+`schema/profile.schema.json` and `schema/overlay.schema.json` describe the profile and overlay grammar as JSON Schema. Point an editor at them from the top of the file for completion and inline errors:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/locktivity/epack-tool-validate/main/schema/profile.schema.json
+id: my-security-profile
+```
+
+The JSON Schema checks the grammar. Lint goes further: it checks each path against the schema of the artifact it reads.
 
 ### Clause Options
 
@@ -90,7 +136,7 @@ requirements:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `path` | string | JSONPath expression (e.g., `$.mfa_coverage`) |
+| `path` | string | JSONPath expression (e.g., `$.user_security.mfa_coverage_pct`) |
 | `op` | string | Operator: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `exists`, `not_exists`, `max_age_days` |
 | `value` | any | Expected value (not required for `exists`/`not_exists`) |
 | `cardinality` | string | For multi-value paths: `all`, `any`, `none` (empty = single value required) |
@@ -119,7 +165,7 @@ When a JSONPath expression can return multiple values, you must specify how to e
 ```yaml
 metadata_conditions:
   all:
-    - path: $.accounts[*].mfa_enabled
+    - path: $.accounts[*].iam.root_mfa_enabled
       op: eq
       value: true
       cardinality: all  # ALL accounts must have MFA enabled
@@ -136,7 +182,7 @@ metadata_conditions:
 
 ```yaml
 # All accounts must have MFA enabled
-- path: $.accounts[*].mfa_enabled
+- path: $.accounts[*].iam.root_mfa_enabled
   op: eq
   value: true
   cardinality: all
@@ -154,7 +200,7 @@ metadata_conditions:
   cardinality: none
 ```
 
-**Partial presence detection**: For `cardinality: all`, the validator checks that ALL array elements have the field. If some elements are missing the field entirely, validation fails. For example, `$.accounts[*].mfa_enabled` with `cardinality: all` will fail if 2 out of 3 accounts have `mfa_enabled: true` but the third account has no `mfa_enabled` field - the result will show "2 of 3 elements have field".
+**Partial presence detection**: For `cardinality: all`, the validator checks that ALL array elements have the field. If some elements are missing the field entirely, validation fails. For example, `$.accounts[*].iam.root_mfa_enabled` with `cardinality: all` will fail if 2 out of 3 accounts have `mfa_enabled: true` but the third account has no `mfa_enabled` field - the result will show "2 of 3 elements have field".
 
 **Note**: Partial presence detection requires a simple wildcard path (e.g., `$.accounts[*].field`). Recursive descent paths (`$..field`) cannot detect partial presence since there's no single base array to count.
 
@@ -192,17 +238,17 @@ name: Production Overlay          # Optional name
 # Modify existing requirements (replaces entire requirement)
 modify:
   - id: REQ-001
-    name: Stricter Access Control
+    name: MFA is enforced and phishing-resistant
     satisfied_by:
       any_of:
         - type: evidencepack/idp-posture@v1
           metadata_conditions:
             all:
-              - path: $.has_access_policy
-                op: eq
-                value: true
-              - path: $.policy_reviewed_days
-                op: lte
+              - path: $.user_security.mfa_coverage_pct
+                op: gte
+                value: 100
+              - path: $.user_security.mfa_phishing_resistant_pct
+                op: gte
                 value: 90
 
 # Skip requirements entirely
@@ -325,7 +371,7 @@ The `asserted_support` output section is keyed by profile ID:
     {
       "requirement": "REQ-001",
       "requirement_id": "REQ-001",
-      "evidence": {"artifact": "artifacts/idp-posture.json", "pointer": "/mfa_coverage"},
+      "evidence": {"artifact": "artifacts/idp-posture.json", "pointer": "/user_security/mfa_coverage_pct"},
       "label": "MFA coverage from the IdP export",
       "resolution": "resolved",
       "value": 100,
@@ -350,7 +396,8 @@ Mapping issues surface as warnings, in the `warnings` array of `validation.json`
 
 | File | Description |
 |------|-------------|
-| `validation.json` | JSON file containing validation results |
+| `validation.json` | Validation results, written when the tool runs with a pack |
+| `lint.json` | Lint findings, written when the tool runs without a pack. `status` is `pass` when there are no errors |
 
 ## Exit Codes
 

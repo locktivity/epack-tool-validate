@@ -13,6 +13,8 @@ The tool performs validation in several stages:
 5. **Pack Indexing**: Indexes artifacts by their schema for efficient lookup
 6. **Validation**: Evaluates each requirement against the indexed artifacts
 
+Run without a pack, the tool stops after compilation and lints the profile instead. See [Linting a Profile](configuration.md#linting-a-profile).
+
 ## Profile Structure
 
 Profiles are YAML files that define compliance requirements:
@@ -33,7 +35,7 @@ requirements:
         - type: evidencepack/idp-posture@v1
           metadata_conditions:
             all:
-              - path: $.mfa_enabled
+              - path: $.policy.mfa_required
                 op: eq
                 value: true
 ```
@@ -63,12 +65,12 @@ Conditions use JSONPath expressions to evaluate artifact metadata:
 
 ### Cardinality for Multi-Value Paths
 
-When using JSONPath expressions that return multiple values (e.g., `$.accounts[*].mfa_enabled`), you must specify how to evaluate them:
+When using JSONPath expressions that return multiple values (e.g., `$.accounts[*].iam.root_mfa_enabled`), you must specify how to evaluate them:
 
 ```yaml
 metadata_conditions:
   all:
-    - path: $.accounts[*].mfa_enabled
+    - path: $.accounts[*].iam.root_mfa_enabled
       op: eq
       value: true
       cardinality: all  # ALL values must satisfy the condition
@@ -92,7 +94,7 @@ satisfied_by:
     - type: evidencepack/idp-posture@v1
       metadata_conditions:
         all:
-          - path: $.mfa_coverage
+          - path: $.user_security.mfa_coverage_pct
             op: gte
             value: 100
 
@@ -101,7 +103,7 @@ satisfied_by:
       severity: low
       metadata_conditions:
         all:
-          - path: $.mfa_coverage
+          - path: $.user_security.mfa_coverage_pct
             op: gte
             value: 90
 ```
@@ -249,7 +251,7 @@ modify:
         - type: evidencepack/idp-posture@v1
           metadata_conditions:
             all:
-              - path: $.mfa_coverage
+              - path: $.user_security.mfa_coverage_pct
                 op: gte
                 value: 100
 

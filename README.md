@@ -17,6 +17,8 @@ See [docs/](docs/) for detailed documentation.
 - **Digest Verification**: Optionally verify profile integrity against manifest digests
 - **Manual Requirements**: Declare requirements answered by mapped evidence and human review (`manual: true`) instead of machine checks
 - **Asserted Support**: Report control mapping artifacts (`evidencepack/control-mapping@v1`) beside computed results, with per-entry evidence resolution
+- **Profile Lint**: Run without a pack to check a profile's paths, operators and values against each artifact's JSON Schema, and flag tests that pass when there is nothing to test
+- **JSON Schema**: `schema/profile.schema.json` and `schema/overlay.schema.json` give editors and coding agents completion and inline errors
 
 ## Development
 

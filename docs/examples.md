@@ -72,7 +72,7 @@ All requirements are satisfied.
       "delta": -15,
       "message": "conditions not satisfied",
       "artifact": "artifacts/idp-posture.json",
-      "path": "$.mfa_coverage",
+      "path": "$.user_security.mfa_coverage_pct",
       "failure_kind": "condition",
       "checks": [
         {
@@ -83,7 +83,7 @@ All requirements are satisfied.
           "message": "conditions not satisfied",
           "conditions": [
             {
-              "path": "$.mfa_coverage",
+              "path": "$.user_security.mfa_coverage_pct",
               "expected": {"op": "gte", "value": 100},
               "actual": 85,
               "delta": -15,
@@ -150,7 +150,7 @@ requirements:
         - type: evidencepack/idp-posture@v1
           metadata_conditions:
             all:
-              - path: $.mfa_enabled
+              - path: $.policy.mfa_required
                 op: eq
                 value: true
 
@@ -163,12 +163,12 @@ requirements:
         - type: evidencepack/idp-posture@v1
           metadata_conditions:
             all:
-              - path: $.password_policy.min_length
-                op: gte
-                value: 12
-              - path: $.password_policy.require_special
-                op: eq
-                value: true
+              - path: $.user_security.password_policy_noncompliant_pct
+                op: lte
+                value: 0
+              - path: $.user_security.weak_password_pct
+                op: lte
+                value: 0
 ```
 
 ### Graduated Compliance Profile
@@ -191,7 +191,7 @@ requirements:
         - type: evidencepack/idp-posture@v1
           metadata_conditions:
             all:
-              - path: $.mfa_coverage
+              - path: $.user_security.mfa_coverage_pct
                 op: gte
                 value: 100
 
@@ -200,7 +200,7 @@ requirements:
           severity: low
           metadata_conditions:
             all:
-              - path: $.mfa_coverage
+              - path: $.user_security.mfa_coverage_pct
                 op: gte
                 value: 90
 
@@ -209,7 +209,7 @@ requirements:
           severity: medium
           metadata_conditions:
             all:
-              - path: $.mfa_coverage
+              - path: $.user_security.mfa_coverage_pct
                 op: gte
                 value: 75
 
@@ -218,7 +218,7 @@ requirements:
           severity: high
           metadata_conditions:
             all:
-              - path: $.mfa_coverage
+              - path: $.user_security.mfa_coverage_pct
                 op: gte
                 value: 0
 ```
@@ -520,11 +520,11 @@ epack inspect --pack evidence.epack | jq '.artifacts[].schema'
 
 ### Verify JSONPath
 
-Test your JSONPath expressions against artifact content:
+Lint the profile to check every path against the artifact's schema (see [Linting a Profile](configuration.md#linting-a-profile)), then look at the value in a real pack:
 
 ```bash
-# Extract artifact and test JSONPath
-unzip -p evidence.epack artifacts/idp-posture.json | jq '$.mfa_coverage'
+epack tool validate profiles/security.yaml
+unzip -p evidence.epack artifacts/idp-posture.json | jq '.user_security.mfa_coverage_pct'
 ```
 
 ### Profile Compilation Errors

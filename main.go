@@ -20,8 +20,8 @@ func main() {
 	componentsdk.RunTool(componentsdk.ToolSpec{
 		Name:         "validate",
 		Version:      Version,
-		Description:  "Validates evidence packs against compliance profiles",
-		RequiresPack: true,
+		Description:  "Validates evidence packs against compliance profiles, or lints a profile when run without a pack",
+		RequiresPack: false,
 		Network:      false,
 	}, run)
 }
@@ -29,8 +29,7 @@ func main() {
 func run(ctx componentsdk.ToolContext) error {
 	pack := ctx.Pack()
 	if pack == nil {
-		// Pack is required but not provided.
-		return fmt.Errorf("no pack provided")
+		return runLint(ctx, os.Args[1:])
 	}
 	manifest := pack.Manifest()
 
@@ -43,14 +42,9 @@ func run(ctx componentsdk.ToolContext) error {
 		return fmt.Errorf("resolving profile: %w", err)
 	}
 
-	// Get project root for relative path resolution
-	projectRoot := os.Getenv("EPACK_PROJECT_ROOT")
-	if projectRoot == "" {
-		// Fall back to current directory if not set
-		projectRoot, err = os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getting working directory: %w", err)
-		}
+	projectRoot, err := projectRoot()
+	if err != nil {
+		return err
 	}
 
 	// Load and parse profile bundle
@@ -106,3 +100,16 @@ func run(ctx componentsdk.ToolContext) error {
 
 // Output file name
 const OutputFile = "validation.json"
+
+// projectRoot is the directory profile, overlay and schema paths resolve
+// against.
+func projectRoot() (string, error) {
+	if root := os.Getenv("EPACK_PROJECT_ROOT"); root != "" {
+		return root, nil
+	}
+	root, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting working directory: %w", err)
+	}
+	return root, nil
+}

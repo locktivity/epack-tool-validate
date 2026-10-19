@@ -561,3 +561,40 @@ func TestCompile_DescriptionPassthrough(t *testing.T) {
 		t.Errorf("manual requirement Description = %q", compiled.Requirements[1].Description)
 	}
 }
+
+func TestDiagnose_ReportsEveryFailureInDocumentOrder(t *testing.T) {
+	profile := makeValidRawProfile()
+	conds := profile.Requirements[0].SatisfiedBy.AnyOf[0].MetadataConditions
+	conds.All = append(conds.All,
+		raw.RawCondition{Path: "$.a", Op: "like", Value: 1},
+		raw.RawCondition{Path: "$.b", Op: "eq", Value: 1, Cardinality: "most"},
+	)
+	second := profile.Requirements[0]
+	second.ID = "REQ-002"
+	second.SatisfiedBy = raw.RawSatisfiedBy{}
+	profile.Requirements = append(profile.Requirements, second)
+
+	diags := Diagnose(profile, "profile.yaml")
+	var got []string
+	for _, d := range diags {
+		got = append(got, d.Code)
+	}
+	want := []string{"INVALID_OPERATOR", "INVALID_CARDINALITY", "INVALID_CLAUSE_MODE"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("Diagnose codes = %v, want %v", got, want)
+	}
+	if diags[0].Location.ConditionIndex != 1 || diags[1].Location.ConditionIndex != 2 {
+		t.Errorf("condition indexes = %d, %d", diags[0].Location.ConditionIndex, diags[1].Location.ConditionIndex)
+	}
+
+	_, err := Compile(profile, "profile.yaml")
+	if err == nil || !strings.Contains(err.Error(), "INVALID_OPERATOR") {
+		t.Errorf("Compile should still stop at the first failure, got %v", err)
+	}
+}
+
+func TestDiagnose_ValidProfileHasNoFindings(t *testing.T) {
+	if diags := Diagnose(makeValidRawProfile(), "profile.yaml"); len(diags) != 0 {
+		t.Errorf("Diagnose = %v", diags)
+	}
+}

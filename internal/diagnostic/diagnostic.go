@@ -35,18 +35,20 @@ type Diagnostic struct {
 
 // Location identifies where in the input the issue occurred.
 type Location struct {
-	File          string // Source file path
-	RequirementID string // If applicable
-	ClauseIndex   int    // If applicable (-1 if not)
-	Line          int    // YAML line number if known (-1 if not)
+	File           string // Source file path
+	RequirementID  string // If applicable
+	ClauseIndex    int    // If applicable (-1 if not)
+	ConditionIndex int    // If applicable (-1 if not)
+	Line           int    // YAML line number if known (-1 if not)
 }
 
 // NewLocation creates a location with default values for optional fields.
 func NewLocation(file string) Location {
 	return Location{
-		File:        file,
-		ClauseIndex: -1,
-		Line:        -1,
+		File:           file,
+		ClauseIndex:    -1,
+		ConditionIndex: -1,
+		Line:           -1,
 	}
 }
 

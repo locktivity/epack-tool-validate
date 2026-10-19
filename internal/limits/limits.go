@@ -18,6 +18,9 @@ var (
 
 	// OverlayFile is the limit for overlay YAML files (1 MB).
 	OverlayFile SizeLimit = 1 * 1024 * 1024
+
+	// ArtifactSchemaFile is the limit for artifact JSON Schema files (1 MB).
+	ArtifactSchemaFile SizeLimit = 1 * 1024 * 1024
 )
 
 // File permission constants.
