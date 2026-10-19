@@ -13,7 +13,7 @@
         "access_key_rotation_compliant_pct": 100
       },
       "storage": {"encryption_pct": 100, "public_access_blocked_pct": 100},
-      "logging": {"cloudtrail_enabled": true, "cloudtrail_multiregion": true},
+      "logging": {"audit_log_enabled": true, "audit_log_all_regions": true, "cloudtrail_enabled": true, "cloudtrail_multiregion": true},
       "network": {"ssh_open_to_world_pct": 0, "rdp_open_to_world_pct": 0},
       "backup": {"retention_days_min": 14},
       "vuln_scanning": {"enabled": true, "unpatched_pct": 5}
