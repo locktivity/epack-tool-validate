@@ -1,29 +1,26 @@
 // Package evidenceschema resolves profile JSONPaths against the JSON Schemas
 // of the artifacts they test.
 //
-// The bundled schemas are copies of the normalized schemas the epack
-// collector SDK checks collector output against: bundled/<name>.json is
-// componentsdk/schema/normalized/<name>.v1.json in
-// github.com/locktivity/epack. When epack changes one, copy it here unedited,
-// or lint reports the fields added there as unknown.
+// The bundled schemas are the normalized schemas the epack collector SDK
+// checks collector output against. They are read from the SDK with
+// componentsdk.NormalizedSchemaJSON, so lint sees a change to one only after
+// go.mod requires an epack release that has it.
 package evidenceschema
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
 	"sort"
+
+	"github.com/locktivity/epack/componentsdk"
 )
 
-//go:embed bundled/*.json
-var bundledFS embed.FS
-
-var bundledFiles = map[string]string{
-	"evidencepack/idp-posture@v1":   "bundled/idp-posture.json",
-	"evidencepack/cloud-posture@v1": "bundled/cloud-posture.json",
-	"evidencepack/vcs-posture@v1":   "bundled/vcs-posture.json",
-	"evidencepack/email-dns@v1":     "bundled/email-dns.json",
-	"evidencepack/tls@v1":           "bundled/tls.json",
+var bundledTypes = []string{
+	"evidencepack/idp-posture@v1",
+	"evidencepack/cloud-posture@v1",
+	"evidencepack/vcs-posture@v1",
+	"evidencepack/email-dns@v1",
+	"evidencepack/tls@v1",
 }
 
 // SourceBundled marks a schema that ships inside this tool.
@@ -44,10 +41,10 @@ type Registry struct {
 // Bundled returns a registry holding the schemas that ship with this tool.
 func Bundled() (*Registry, error) {
 	r := &Registry{schemas: map[string]*Schema{}}
-	for typ, file := range bundledFiles {
-		data, err := bundledFS.ReadFile(file)
-		if err != nil {
-			return nil, fmt.Errorf("reading bundled schema for %s: %w", typ, err)
+	for _, typ := range bundledTypes {
+		data := componentsdk.NormalizedSchemaJSON(typ)
+		if data == nil {
+			return nil, fmt.Errorf("epack has no normalized schema for %s", typ)
 		}
 		if err := r.Add(typ, data, SourceBundled); err != nil {
 			return nil, err
