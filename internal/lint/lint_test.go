@@ -332,3 +332,163 @@ func TestReport_TextListsErrorsBeforeWarningsInDocumentOrder(t *testing.T) {
 		t.Errorf("summary line wrong:\n%s", out)
 	}
 }
+
+func TestRun_GatePathsResolveAgainstTheGateType(t *testing.T) {
+	r := lintProfile(t, header+`  - id: R
+    name: R statement
+    satisfied_by:
+      any_of:
+        - type: acme/settings@v1
+          applicable_when:
+            type: evidencepack/cloud-posture@v1
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+              - path: $.workforce_signin.in_use
+                op: eq
+                value: true
+          metadata_conditions:
+            all:
+              - path: $.captured_on
+                op: exists
+`)
+	d := find(t, r, CodeUnknownPath)
+	if d.Requirement != "R" || d.Location != "any_of[0].applicable_when.all[1]" || d.Type != "evidencepack/cloud-posture@v1" {
+		t.Errorf("located at %s %s in %s", d.Requirement, d.Location, d.Type)
+	}
+	if d := find(t, r, CodeTypeUnchecked); d.Location != "any_of[0]" || d.Type != "acme/settings@v1" {
+		t.Errorf("the clause's own type is unchecked at %s for %s", d.Location, d.Type)
+	}
+	if len(r.Diagnostics) != 2 {
+		t.Errorf("got %v", codes(r))
+	}
+}
+
+func TestRun_GateTypeWithoutASchema(t *testing.T) {
+	tests := []struct {
+		name, clause, location, typ string
+	}{
+		{"another type", `        - type: evidencepack/idp-posture@v1
+          applicable_when:
+            type: acme/thing@v1
+            all:
+              - path: $.ok
+                op: eq
+                value: true
+          metadata_conditions:
+            all:
+              - path: $.user_security.mfa_coverage_pct
+                op: gte
+                value: 100
+`, "any_of[0].applicable_when", "acme/thing@v1"},
+		{"the clause's own type, with no other conditions", `        - type: acme/thing@v1
+          applicable_when:
+            all:
+              - path: $.ok
+                op: eq
+                value: true
+`, "any_of[0].applicable_when", "acme/thing@v1"},
+		{"the clause's own type, sharing its finding", `        - type: acme/thing@v1
+          applicable_when:
+            all:
+              - path: $.ok
+                op: eq
+                value: true
+          metadata_conditions:
+            all:
+              - path: $.count
+                op: gte
+                value: 1
+`, "any_of[0]", "acme/thing@v1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := lintProfile(t, header+"  - id: R\n    name: R statement\n    satisfied_by:\n      any_of:\n"+tt.clause)
+			if len(r.Diagnostics) != 1 {
+				t.Fatalf("got %v", codes(r))
+			}
+			if d := r.Diagnostics[0]; d.Code != CodeTypeUnchecked || d.Location != tt.location || d.Type != tt.typ {
+				t.Errorf("got %s at %s for %s", d.Code, d.Location, d.Type)
+			}
+		})
+	}
+}
+
+func TestRun_GateCompileErrorsAreLocated(t *testing.T) {
+	tests := []struct {
+		name, clause, code, location string
+	}{
+		{"each with no clause conditions", `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.accounts[*].iam.root_mfa_enabled
+                op: eq
+                value: true
+                cardinality: each
+`, "INVALID_GATE", "any_of[0].applicable_when.all[0]"},
+		{"a list condition on another list", `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.accounts[*].iam.root_mfa_enabled
+                op: eq
+                value: true
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.mfa_coverage_pct
+                op: gte
+                value: 100
+                cardinality: all
+              - path: $..mfa_coverage_pct
+                op: gte
+                value: 100
+                cardinality: all
+`, "INVALID_GATE", "any_of[0].metadata_conditions.all[1]"},
+		{"a gate with no conditions", `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            type: evidencepack/cloud-posture@v1
+`, "INVALID_GATE", "any_of[0].applicable_when"},
+		{"each outside a gate", `        - type: evidencepack/cloud-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.mfa_coverage_pct
+                op: gte
+                value: 100
+                cardinality: each
+`, "INVALID_CARDINALITY", "any_of[0].metadata_conditions.all[0]"},
+		{"an operator in a gate", `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.provider
+                op: like
+                value: aws
+`, "INVALID_OPERATOR", "any_of[0].applicable_when.all[0]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := lintProfile(t, header+"  - id: R\n    name: R statement\n    satisfied_by:\n      any_of:\n"+tt.clause)
+			d := find(t, r, tt.code)
+			if d.Location != tt.location || d.Severity != SeverityError || strings.HasPrefix(d.Message, "requirement ") {
+				t.Errorf("%s at %q (%s): %s", d.Code, d.Location, d.Severity, d.Message)
+			}
+			if r.Status != "fail" {
+				t.Errorf("status %s", r.Status)
+			}
+		})
+	}
+}
+
+func TestRun_GatedProfileLintsClean(t *testing.T) {
+	profile, err := os.ReadFile("../../testdata/profiles/cloud-access.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := lintProfile(t, string(profile))
+	if r.Status != "pass" || len(r.Diagnostics) != 1 {
+		t.Fatalf("status %s, findings %v", r.Status, codes(r))
+	}
+	if d := r.Diagnostics[0]; d.Code != CodeTypeUnchecked || d.Type != "evidencepack/identity-center-mfa-settings@v1" || d.Location != "all_of[3]" {
+		t.Errorf("got %s at %s for %s", d.Code, d.Location, d.Type)
+	}
+}

@@ -126,16 +126,71 @@
             }
           }
         },
+        "applicable_when": { "$ref": "#/$defs/gate" },
         "metadata_conditions": {
           "type": "object",
           "additionalProperties": false,
+          "description": "What the artifact must show. A clause without conditions matches any artifact of its type that it applies to. Required when applicable_when has a cardinality each condition.",
           "properties": {
             "all": {
               "type": "array",
-              "items": { "$ref": "#/$defs/condition" },
+              "items": {
+                "allOf": [
+                  { "$ref": "#/$defs/condition" },
+                  { "properties": { "cardinality": { "enum": ["", "single", "all", "any", "none"] } } }
+                ]
+              },
               "description": "Every condition must hold for the clause to match."
             }
           }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["applicable_when"],
+            "properties": {
+              "applicable_when": {
+                "required": ["all"],
+                "properties": {
+                  "all": {
+                    "contains": {
+                      "required": ["cardinality"],
+                      "properties": { "cardinality": { "const": "each" } }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": ["metadata_conditions"],
+            "properties": {
+              "metadata_conditions": {
+                "required": ["all"],
+                "properties": { "all": { "minItems": 1 } }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["all"],
+      "description": "When the clause applies. A clause whose conditions here are false reads not_applicable and is set aside when the requirement combines its clauses. A value these conditions need that is absent makes the clause unknown, never not_applicable.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Artifact type the conditions read. Defaults to the clause's own type. With another type, the clause applies when the conditions hold on any artifact of that type."
+        },
+        "all": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/condition" },
+          "description": "Every condition must hold for the clause to apply."
         }
       }
     },
@@ -157,8 +212,8 @@
           "description": "Value to compare against. Not used by exists and not_exists."
         },
         "cardinality": {
-          "enum": ["", "single", "all", "any", "none"],
-          "description": "How a multi-value path is scored: all values, any value, or no value must satisfy the condition."
+          "enum": ["", "single", "all", "any", "none", "each"],
+          "description": "How a multi-value path is scored: all values, any value, or no value must satisfy the condition. each is allowed only in applicable_when, on a path with one [*], and decides the condition for each element of the list before the [*]: elements it rules out are skipped, and the clause's conditions on that list grade the rest."
         }
       },
       "allOf": [
@@ -181,7 +236,21 @@
           },
           "then": {
             "required": ["cardinality"],
-            "properties": { "cardinality": { "enum": ["all", "any", "none"] } }
+            "properties": { "cardinality": { "enum": ["all", "any", "none", "each"] } }
+          }
+        },
+        {
+          "if": {
+            "required": ["cardinality"],
+            "properties": { "cardinality": { "const": "each" } }
+          },
+          "then": {
+            "properties": {
+              "path": {
+                "pattern": "\\[\\*\\]",
+                "not": { "pattern": "\\[\\*\\].*\\[\\*\\]|\\.\\*|\\.\\.|\\[\\?|\\[-?[0-9]*:" }
+              }
+            }
           }
         }
       ]

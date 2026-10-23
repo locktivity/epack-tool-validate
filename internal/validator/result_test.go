@@ -281,3 +281,85 @@ func TestRequirementResult_OmitEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestSummary_NotApplicableOmittedAtZero(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value any
+	}{
+		{"summary", Summary{Total: 1, Passed: 1}},
+		{"category", CategorySummary{Passed: 1}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(data, &m); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := m["not_applicable"]; exists {
+				t.Errorf("not_applicable should be omitted at zero: %s", data)
+			}
+		})
+	}
+
+	data, err := json.Marshal(Summary{Total: 2, Passed: 1, NotApplicable: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["not_applicable"] != 1.0 {
+		t.Errorf("not_applicable = %v in %s", m["not_applicable"], data)
+	}
+}
+
+func TestCheckResult_ApplicableWhenJSON(t *testing.T) {
+	skipped, evaluated := 3, 0
+	check := CheckResult{
+		ClauseIndex: 2,
+		Schema:      "evidencepack/cloud-posture@v1",
+		Status:      "not_applicable",
+		ApplicableWhen: &ApplicableWhen{
+			Type: "evidencepack/cloud-posture@v1",
+			Conditions: []ConditionCheck{{
+				Path:     "$.accounts[*].iam.user_count",
+				Expected: &ExpectedValue{Op: "gte", Value: 1},
+				Actual:   "0 of 3 elements match",
+			}},
+			Skipped:   &skipped,
+			Evaluated: &evaluated,
+		},
+	}
+	data, err := json.Marshal(check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	gate, ok := m["applicable_when"].(map[string]any)
+	if !ok {
+		t.Fatalf("applicable_when missing from %s", data)
+	}
+	if gate["type"] != "evidencepack/cloud-posture@v1" || gate["skipped"] != 3.0 || gate["evaluated"] != 0.0 {
+		t.Errorf("applicable_when = %v; a zero count still appears with each", gate)
+	}
+	conditions := gate["conditions"].([]any)
+	if c := conditions[0].(map[string]any); c["passed"] != false || c["path"] != "$.accounts[*].iam.user_count" {
+		t.Errorf("condition = %v", c)
+	}
+
+	data, err = json.Marshal(ApplicableWhen{Type: "evidencepack/cloud-posture@v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"type":"evidencepack/cloud-posture@v1"}` {
+		t.Errorf("without each, skipped and evaluated are left out: %s", data)
+	}
+}

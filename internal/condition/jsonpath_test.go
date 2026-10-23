@@ -252,3 +252,50 @@ func TestParseJSONPath_RootOnly(t *testing.T) {
 		t.Errorf("EvaluateJSONPath($) = %v, want map with key=value", result)
 	}
 }
+
+func TestSplitAtWildcard(t *testing.T) {
+	tests := []struct {
+		path, list, element string
+	}{
+		{"$.accounts[*].iam.user_count", "$.accounts", "$.iam.user_count"},
+		{"$.data.accounts[*].iam", "$.data.accounts", "$.iam"},
+		{"$.accounts[*]", "$.accounts", "$"},
+		{"$[*].name", "$", "$.name"},
+		{"$.orgs[0].accounts[*].id", "$.orgs[0].accounts", "$.id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			expr, _, err := ParseJSONPathMulti(tt.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			list, element, ok := SplitAtWildcard(expr)
+			if !ok {
+				t.Fatalf("SplitAtWildcard(%q) did not split", tt.path)
+			}
+			if list.String() != tt.list || element.String() != tt.element {
+				t.Errorf("SplitAtWildcard(%q) = %s, %s; want %s, %s", tt.path, list, element, tt.list, tt.element)
+			}
+		})
+	}
+
+	for _, path := range []string{
+		"$.accounts",                 // no wildcard
+		"$.accounts[*].regions[*].x", // two wildcards
+		"$.accounts[*]..x",           // recursive descent
+		"$..accounts[*].x",           // recursive descent before the list
+		"$.accounts[0:2].x",          // slice
+		"$.accounts[*].tags[0,1]",    // union
+		"$.accounts[?(@.x == 1)].y",  // filter
+	} {
+		t.Run(path, func(t *testing.T) {
+			expr, _, err := ParseJSONPathMulti(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, ok := SplitAtWildcard(expr); ok {
+				t.Errorf("SplitAtWildcard(%q) split, want no split", path)
+			}
+		})
+	}
+}

@@ -46,11 +46,12 @@ const (
 )
 
 // ClauseOutcome is the structured result of evaluating one clause.
-// Matched and Unknown are mutually exclusive; both false means the clause
-// definitively did not match.
+// Matched, Unknown and NotApplicable are mutually exclusive; all false means
+// the clause definitively did not match.
 type ClauseOutcome struct {
 	Matched       bool            // Did conditions definitively match?
 	Unknown       bool            // Evidence absent: conditions could not be evaluated
+	NotApplicable bool            // applicable_when set the clause aside for every artifact
 	Severity      string          // From clause - empty means pass, present means graded failure
 	ArtifactPath  string          // Which artifact was evaluated (empty if no match)
 	FailureKind   FailureKind     // Why conditions didn't match
@@ -63,4 +64,6 @@ type ClauseOutcome struct {
 	ConditionActual   any            // Actual value (typed)
 	ConditionDelta    *float64       // Delta for numeric comparisons (actual - expected)
 	ConditionChecks   []ConditionCheck
+
+	ApplicableWhen *ApplicableWhen // How the clause's gate was decided, when it has one and it was evaluated
 }

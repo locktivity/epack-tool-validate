@@ -311,3 +311,66 @@ requirements:
 		t.Error("Manual should be true")
 	}
 }
+
+func TestParseProfileFromBytes_ApplicableWhen(t *testing.T) {
+	t.Run("gate parses", func(t *testing.T) {
+		profile, err := ParseProfileFromBytes([]byte(`
+id: test-profile
+name: Test Profile
+version: "1.0.0"
+requirements:
+  - id: REQ-001
+    name: Test Requirement
+    satisfied_by:
+      any_of:
+        - type: evidencepack/settings@v1
+          applicable_when:
+            type: evidencepack/cloud-posture@v1
+            all:
+              - path: $.accounts[*].iam.user_count
+                op: gte
+                value: 1
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $.captured_on
+                op: max_age_days
+                value: 365
+`))
+		if err != nil {
+			t.Fatalf("ParseProfileFromBytes() error: %v", err)
+		}
+		gate := profile.Requirements[0].SatisfiedBy.AnyOf[0].ApplicableWhen
+		if gate == nil {
+			t.Fatal("ApplicableWhen should not be nil")
+		}
+		if gate.Type != "evidencepack/cloud-posture@v1" {
+			t.Errorf("Type = %q", gate.Type)
+		}
+		if len(gate.All) != 1 || gate.All[0].Cardinality != "each" || gate.All[0].Path != "$.accounts[*].iam.user_count" {
+			t.Errorf("All = %+v", gate.All)
+		}
+	})
+
+	t.Run("unknown key inside a gate rejected (strict)", func(t *testing.T) {
+		_, err := ParseProfileFromBytes([]byte(`
+id: test-profile
+name: Test Profile
+version: "1.0.0"
+requirements:
+  - id: REQ-001
+    name: Test Requirement
+    satisfied_by:
+      any_of:
+        - type: evidencepack/test@v1
+          applicable_when:
+            any:
+              - path: $.enabled
+                op: eq
+                value: true
+`))
+		if err == nil {
+			t.Error("ParseProfileFromBytes() should reject an unknown key inside applicable_when")
+		}
+	})
+}

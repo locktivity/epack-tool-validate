@@ -7,6 +7,7 @@ import (
 
 	"github.com/locktivity/epack-tool-validate/internal/condition"
 	"github.com/locktivity/epack-tool-validate/internal/profile/compiled"
+	"github.com/ohler55/ojg/jp"
 )
 
 // Validator evaluates compiled profiles against pack indexes.
@@ -63,7 +64,8 @@ func (v *Validator) Validate(ctx *Context, profile *compiled.CompiledProfile, pa
 
 		// Update summary. Any failure makes the overall status "fail"; with
 		// no failures, any unknown makes it "unknown" (the pack cannot be
-		// asserted to pass on absent evidence).
+		// asserted to pass on absent evidence). A requirement no clause
+		// applied to never changes the overall status.
 		switch reqResult.Status {
 		case "pass":
 			result.Summary.Passed++
@@ -72,6 +74,8 @@ func (v *Validator) Validate(ctx *Context, profile *compiled.CompiledProfile, pa
 			if result.Status == "pass" {
 				result.Status = "unknown"
 			}
+		case "not_applicable":
+			result.Summary.NotApplicable++
 		default:
 			result.Status = "fail"
 			if reqResult.FailureKind == "missing" {
@@ -98,6 +102,8 @@ func (v *Validator) Validate(ctx *Context, profile *compiled.CompiledProfile, pa
 				cat.Passed++
 			case reqResult.Status == "unknown":
 				cat.Unknown++
+			case reqResult.Status == "not_applicable":
+				cat.NotApplicable++
 			case reqResult.FailureKind == "missing":
 				cat.Missing++
 			default:
@@ -123,21 +129,31 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 	// Evaluate all clauses
 	outcomes := make([]ClauseOutcome, len(req.Clauses))
 	for i, clause := range req.Clauses {
-		artifacts := pack.BySchema[clause.Schema]
-		outcomes[i] = v.evaluateClause(ctx, &clause, artifacts)
+		outcomes[i] = v.evaluateClause(ctx, &clause, pack)
+	}
+
+	// Clauses that do not apply are set aside before the modes combine the
+	// rest. When none applies, the requirement is not applicable.
+	applicable := applicableIndexes(outcomes)
+	if len(applicable) == 0 {
+		result.Status = "not_applicable"
+		result.Checks = buildCheckResults(req, outcomes, -1)
+		return result
 	}
 
 	switch req.Mode {
 	case compiled.ClauseModeAny:
 		// Track which clause index is selected (determines outcome)
 		var selectedClauseIndex int
-		// For graduated failures, we want to show the "pass" threshold (first clause)
-		// rather than the matched fallback clause. Capture first clause's details.
+		// For graduated failures, we want to show the "pass" threshold (the
+		// first clause that applies) rather than the matched fallback clause.
+		// Capture that clause's details.
+		first := applicable[0]
 		var firstClauseDetails *ClauseOutcome
 		var firstClauseCondCount int
-		if len(outcomes) > 0 && outcomes[0].ConditionPath != "" {
-			firstClauseDetails = &outcomes[0]
-			firstClauseCondCount = len(req.Clauses[0].Conditions)
+		if outcomes[first].ConditionPath != "" {
+			firstClauseDetails = &outcomes[first]
+			firstClauseCondCount = len(req.Clauses[first].Conditions)
 		}
 
 		// A definite pass wins outright: any_of is satisfied regardless of
@@ -183,7 +199,7 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 				// failure details so users see what they need to achieve for full compliance.
 				// The first clause's failing condition shows the gap to full pass.
 				matchedClauseCondCount := len(req.Clauses[i].Conditions)
-				canUseFirstClause := i > 0 &&
+				canUseFirstClause := i > first &&
 					firstClauseDetails != nil &&
 					firstClauseDetails.ConditionExpected != nil &&
 					!firstClauseDetails.Matched // First clause must have failed (has meaningful failure details)
@@ -198,7 +214,7 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 				if canUseFirstClause {
 					// Use first clause's failure details entirely (path, expected, actual, delta)
 					// Also mark first clause as selected since it shows the pass threshold
-					selectedClauseIndex = 0
+					selectedClauseIndex = first
 					result.Path = firstClauseDetails.ConditionPath
 					result.Expected = firstClauseDetails.ConditionExpected
 					result.Actual = firstClauseDetails.ConditionActual
@@ -233,30 +249,47 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 		return result
 
 	case compiled.ClauseModeAll:
-		// All clauses must match AND have no severity to pass
+		// All clauses that apply must match AND have no severity to pass
 		// For all_of mode, don't mark any check as selected (all matter equally)
 		// A definite non-match decides failure even when other clauses are
 		// unknown: all_of needs every clause, and one definitively missed.
+		// A missing artifact type decides only when no other clause missed,
+		// so absent evidence never hides a failed comparison.
+		decisive := -1
+		for _, i := range applicable {
+			o := outcomes[i]
+			if o.Matched || o.Unknown {
+				continue
+			}
+			if o.FailureKind != FailureKindNoMatch {
+				decisive = i
+				break
+			}
+			if decisive < 0 {
+				decisive = i
+			}
+		}
+		if decisive >= 0 {
+			o := outcomes[decisive]
+			result.Status = "fail"
+			result.Severity = "high"
+			result.FailureKind = failureKindForOutcome(o)
+			result.Message = o.FailureDetail
+			if o.ArtifactPath != "" {
+				result.Artifact = o.ArtifactPath
+			}
+			// Propagate condition details
+			result.Path = o.ConditionPath
+			result.Expected = o.ConditionExpected
+			result.Actual = o.ConditionActual
+			result.Delta = o.ConditionDelta
+			// For all_of, the deciding check is technically the "blocker"
+			// but we don't mark it as selected since all checks matter
+			result.Checks = buildCheckResults(req, outcomes, -1) // -1 = no selected
+			return result
+		}
 		var highestSeverity string
 		for _, o := range outcomes {
-			if !o.Matched && !o.Unknown {
-				result.Status = "fail"
-				result.Severity = "high"
-				result.FailureKind = failureKindForOutcome(o)
-				result.Message = o.FailureDetail
-				if o.ArtifactPath != "" {
-					result.Artifact = o.ArtifactPath
-				}
-				// Propagate condition details
-				result.Path = o.ConditionPath
-				result.Expected = o.ConditionExpected
-				result.Actual = o.ConditionActual
-				result.Delta = o.ConditionDelta
-				// For all_of, the first failing check is technically the "blocker"
-				// but we don't mark it as selected since all checks matter
-				result.Checks = buildCheckResults(req, outcomes, -1) // -1 = no selected
-				return result
-			}
 			if o.Severity != "" {
 				highestSeverity = compiled.MaxSeverity(highestSeverity, o.Severity)
 			}
@@ -286,8 +319,8 @@ func (v *Validator) evaluateRequirement(ctx *Context, req *compiled.CompiledRequ
 			return result
 		}
 		result.Status = "pass"
-		if len(outcomes) == 1 {
-			populatePassDetailsFromOutcome(&result, outcomes[0])
+		if len(applicable) == 1 {
+			populatePassDetailsFromOutcome(&result, outcomes[applicable[0]])
 		}
 		result.Checks = buildCheckResults(req, outcomes, -1)
 		return result
@@ -317,14 +350,20 @@ func buildCheckResults(req *compiled.CompiledRequirement, outcomes []ClauseOutco
 	checks := make([]CheckResult, 0, len(outcomes))
 	for i, outcome := range outcomes {
 		check := CheckResult{
-			ClauseIndex: i,
-			Schema:      req.Clauses[i].Schema,
-			Status:      checkStatusForOutcome(outcome),
-			Severity:    outcome.Severity,
-			Selected:    i == selectedIndex, // Mark the decisive check
-			Artifact:    outcome.ArtifactPath,
-			Message:     outcome.FailureDetail,
-			Conditions:  outcome.ConditionChecks,
+			ClauseIndex:    i,
+			Schema:         req.Clauses[i].Schema,
+			Status:         checkStatusForOutcome(outcome),
+			Severity:       outcome.Severity,
+			Selected:       i == selectedIndex, // Mark the decisive check
+			Artifact:       outcome.ArtifactPath,
+			Message:        outcome.FailureDetail,
+			ApplicableWhen: outcome.ApplicableWhen,
+			Conditions:     outcome.ConditionChecks,
+		}
+		// A gate that was never evaluated (no fresh artifact to evaluate it
+		// on) still names the type it reads.
+		if gate := req.Clauses[i].Gate; gate != nil && check.ApplicableWhen == nil {
+			check.ApplicableWhen = &ApplicableWhen{Type: gate.Schema}
 		}
 
 		checks = append(checks, check)
@@ -333,7 +372,22 @@ func buildCheckResults(req *compiled.CompiledRequirement, outcomes []ClauseOutco
 	return checks
 }
 
+// applicableIndexes returns the indexes of the outcomes that were not set
+// aside as not applicable.
+func applicableIndexes(outcomes []ClauseOutcome) []int {
+	var indexes []int
+	for i, o := range outcomes {
+		if !o.NotApplicable {
+			indexes = append(indexes, i)
+		}
+	}
+	return indexes
+}
+
 func checkStatusForOutcome(outcome ClauseOutcome) string {
+	if outcome.NotApplicable {
+		return "not_applicable"
+	}
 	if outcome.Matched {
 		if outcome.Severity == "" {
 			return "pass"
@@ -373,7 +427,39 @@ func failureKindForOutcome(outcome ClauseOutcome) string {
 	}
 }
 
-func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause, artifacts []IndexedArtifact) ClauseOutcome {
+func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause, pack *PackIndex) ClauseOutcome {
+	gate := clause.Gate
+	if gate != nil && gate.Schema != clause.Schema {
+		// A gate on another type is decided across that type's artifacts
+		// before the clause reads its own.
+		gateArtifacts := pack.BySchema[gate.Schema]
+		if len(gateArtifacts) == 0 {
+			return ClauseOutcome{
+				Matched:        false,
+				FailureKind:    FailureKindNoMatch,
+				FailureDetail:  fmt.Sprintf("no artifact with schema %s", gate.Schema),
+				Origin:         clause.Origin,
+				ApplicableWhen: &ApplicableWhen{Type: gate.Schema},
+			}
+		}
+		decision, artifactPath := decideGateAcross(gate, gateArtifacts, ctx.Now())
+		switch decision.Verdict {
+		case VerdictFalse:
+			return notApplicableOutcome(clause, artifactPath, decision)
+		case VerdictUnknown:
+			return gateUnknownOutcome(clause, artifactPath, decision)
+		}
+		outcome := v.evaluateArtifacts(ctx, clause, nil, pack.BySchema[clause.Schema])
+		outcome.ApplicableWhen = decision.Report
+		return outcome
+	}
+	return v.evaluateArtifacts(ctx, clause, gate, pack.BySchema[clause.Schema])
+}
+
+// evaluateArtifacts evaluates a clause against the artifacts of its own type.
+// A gate here reads those same artifacts; artifacts it sets aside take no
+// part in the result unless every artifact was set aside.
+func (v *Validator) evaluateArtifacts(ctx *Context, clause *compiled.CompiledClause, gate *compiled.CompiledGate, artifacts []IndexedArtifact) ClauseOutcome {
 	if len(artifacts) == 0 {
 		return ClauseOutcome{
 			Matched:       false,
@@ -386,6 +472,7 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 	// Track what we've seen for accurate failure reporting
 	var freshConditionFailure *ClauseOutcome // Fresh artifact that failed conditions
 	var insufficientEvidence *ClauseOutcome  // Fresh artifact whose evidence was absent
+	var notApplicable *ClauseOutcome         // First artifact the gate set aside
 	var staleArtifact *IndexedArtifact       // First stale artifact found
 	var missingTimestamp bool                // Any artifact missing timestamp
 
@@ -408,8 +495,30 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 			}
 		}
 
+		var admitted []any
+		var gateReport *ApplicableWhen
+		if gate != nil {
+			decision := decideGate(gate, artifact.Body, ctx.Now())
+			switch decision.Verdict {
+			case VerdictFalse:
+				if notApplicable == nil {
+					outcome := notApplicableOutcome(clause, artifact.Path, decision)
+					notApplicable = &outcome
+				}
+				continue
+			case VerdictUnknown:
+				if insufficientEvidence == nil {
+					outcome := gateUnknownOutcome(clause, artifact.Path, decision)
+					insufficientEvidence = &outcome
+				}
+				continue
+			}
+			admitted = decision.Admitted
+			gateReport = decision.Report
+		}
+
 		// Artifact is fresh (or no freshness requirement) - evaluate conditions
-		condResult := evaluateConditionsWithDetailsAt(clause.Conditions, artifact.Body, ctx.Now())
+		condResult := evaluateConditionsOn(clause.Conditions, artifact.Body, admitted, ctx.Now())
 		switch condResult.Verdict {
 		case VerdictTrue:
 			outcome := ClauseOutcome{
@@ -418,6 +527,7 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 				ArtifactPath:    artifact.Path,
 				Origin:          clause.Origin,
 				ConditionChecks: condResult.Checks,
+				ApplicableWhen:  gateReport,
 			}
 			if condResult.Detail != nil {
 				outcome.ConditionPath = condResult.Detail.Path
@@ -436,6 +546,7 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 					ArtifactPath:    artifact.Path,
 					Origin:          clause.Origin,
 					ConditionChecks: condResult.Checks,
+					ApplicableWhen:  gateReport,
 				}
 				if condResult.Detail != nil {
 					insufficientEvidence.FailureDetail = fmt.Sprintf("insufficient evidence: %s absent from artifact", condResult.Detail.Path)
@@ -456,6 +567,7 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 					ArtifactPath:    artifact.Path,
 					Origin:          clause.Origin,
 					ConditionChecks: condResult.Checks,
+					ApplicableWhen:  gateReport,
 				}
 				if condResult.Detail != nil {
 					freshConditionFailure.ConditionPath = condResult.Detail.Path
@@ -501,12 +613,215 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 		}
 	}
 
+	// Every artifact was set aside.
+	if notApplicable != nil {
+		return *notApplicable
+	}
+
 	// Shouldn't reach here, but fallback to condition failure
 	return ClauseOutcome{
 		Matched:       false,
 		FailureKind:   FailureKindCondition,
 		FailureDetail: "conditions not satisfied",
 		Origin:        clause.Origin,
+	}
+}
+
+// gateDecision is how applicable_when was decided on one artifact.
+type gateDecision struct {
+	Verdict  Verdict           // True: the clause applies. False: it does not
+	Admitted []any             // List elements the clause grades, when the gate has each conditions
+	Unknown  *ConditionFailure // The value that could not be decided, when Verdict is unknown
+	Reason   string            // Why the clause does not apply, when Verdict is false
+	Report   *ApplicableWhen
+}
+
+// decideGate decides applicable_when on one artifact. Conditions without
+// each are a three-valued AND over the artifact. Each conditions are decided
+// per element of the gate's list: an element any of them rules out is
+// skipped, and every other element is admitted, including one whose value
+// is absent. The clause does not apply when the AND is false, or when it is
+// true and every element was skipped. It is unknown when the AND is unknown
+// or the list is absent or empty.
+func decideGate(gate *compiled.CompiledGate, body any, now time.Time) gateDecision {
+	report := &ApplicableWhen{Type: gate.Schema}
+
+	var elements []any
+	listPresent := false
+	if gate.HasEach() {
+		elements, listPresent = listElements(gate.List, body)
+	}
+	admit := make([]bool, len(elements))
+	for k := range admit {
+		admit[k] = true
+	}
+
+	whole := VerdictTrue
+	var unknown *ConditionFailure
+	var firstEach *compiled.CompiledCondition
+	for i := range gate.Conditions {
+		cond := &gate.Conditions[i]
+		if cond.Cardinality == compiled.CardinalityEach {
+			if firstEach == nil {
+				firstEach = cond
+			}
+			check, verdicts := evaluateEachCondition(cond, elements, listPresent, now)
+			for k, verdict := range verdicts {
+				if verdict == VerdictFalse {
+					admit[k] = false
+				}
+			}
+			report.Conditions = append(report.Conditions, check)
+			continue
+		}
+		verdict, detail := evaluateSingleConditionAt(cond, body, now)
+		report.Conditions = append(report.Conditions, conditionCheckFromFailure(detail, verdict))
+		switch {
+		case verdict == VerdictFalse:
+			whole = VerdictFalse
+		case verdict == VerdictUnknown && whole == VerdictTrue:
+			whole = VerdictUnknown
+			unknown = detail
+		}
+	}
+
+	var admitted []any
+	for k, element := range elements {
+		if admit[k] {
+			admitted = append(admitted, element)
+		}
+	}
+	if gate.HasEach() {
+		skipped, evaluated := len(elements)-len(admitted), len(admitted)
+		report.Skipped, report.Evaluated = &skipped, &evaluated
+	}
+
+	decision := gateDecision{Report: report}
+	switch {
+	case whole == VerdictFalse:
+		decision.Verdict = VerdictFalse
+		decision.Reason = "applicable_when does not hold"
+	case whole == VerdictTrue && listPresent && len(admitted) == 0:
+		decision.Verdict = VerdictFalse
+		decision.Reason = fmt.Sprintf("applicable_when skipped every element of %s", gate.List)
+	case whole == VerdictUnknown:
+		decision.Verdict = VerdictUnknown
+		decision.Unknown = unknown
+	case gate.HasEach() && !listPresent:
+		decision.Verdict = VerdictUnknown
+		decision.Unknown = &ConditionFailure{
+			Path:     firstEach.Path,
+			Expected: &ExpectedValue{Op: firstEach.Op.String(), Value: firstEach.Expected},
+		}
+	default:
+		decision.Verdict = VerdictTrue
+		decision.Admitted = admitted
+	}
+	return decision
+}
+
+// decideGateAcross decides a gate on another type's artifacts. It holds when
+// any artifact decides true, is unknown when none does and any is unknown,
+// and is false only when every artifact decides false. The artifact that
+// decided is reported.
+func decideGateAcross(gate *compiled.CompiledGate, artifacts []IndexedArtifact, now time.Time) (gateDecision, string) {
+	var unknown, rejected *gateDecision
+	var unknownPath, rejectedPath string
+	for _, artifact := range artifacts {
+		decision := decideGate(gate, artifact.Body, now)
+		switch decision.Verdict {
+		case VerdictTrue:
+			return decision, artifact.Path
+		case VerdictUnknown:
+			if unknown == nil {
+				unknown, unknownPath = &decision, artifact.Path
+			}
+		default:
+			if rejected == nil {
+				rejected, rejectedPath = &decision, artifact.Path
+			}
+		}
+	}
+	if unknown != nil {
+		return *unknown, unknownPath
+	}
+	rejected.Reason = fmt.Sprintf("applicable_when does not hold for any %s artifact", gate.Schema)
+	return *rejected, rejectedPath
+}
+
+// evaluateEachCondition decides a cardinality each condition on every list
+// element, returning a verdict per element and a check that counts the
+// elements it held for.
+func evaluateEachCondition(cond *compiled.CompiledCondition, elements []any, listPresent bool, now time.Time) (ConditionCheck, []Verdict) {
+	check := ConditionCheck{
+		Path:     cond.Path,
+		Expected: &ExpectedValue{Op: cond.Op.String(), Value: cond.Expected},
+	}
+	if !listPresent {
+		check.Unknown = true
+		return check, nil
+	}
+
+	perElement := *cond
+	perElement.Expr = cond.Element
+	perElement.Cardinality = compiled.CardinalitySingle
+
+	verdicts := make([]Verdict, len(elements))
+	var held, unevaluated int
+	for k, element := range elements {
+		verdicts[k], _ = evaluateSingleValueConditionAt(&perElement, element, now)
+		switch verdicts[k] {
+		case VerdictTrue:
+			held++
+		case VerdictUnknown:
+			unevaluated++
+		}
+	}
+	check.Passed = held > 0
+	check.Unknown = held == 0 && unevaluated > 0
+	check.Actual = fmt.Sprintf("%d of %d elements match", held, len(elements))
+	if unevaluated > 0 {
+		check.Actual = fmt.Sprintf("%d of %d elements match; %d unevaluated", held, len(elements), unevaluated)
+	}
+	return check, verdicts
+}
+
+// listElements returns the elements of the list at path, and false when the
+// list is absent, null, empty, or not a list.
+func listElements(list jp.Expr, body any) ([]any, bool) {
+	values := list.Get(body)
+	if len(values) != 1 {
+		return nil, false
+	}
+	elements, ok := values[0].([]any)
+	if !ok || len(elements) == 0 {
+		return nil, false
+	}
+	return elements, true
+}
+
+func notApplicableOutcome(clause *compiled.CompiledClause, artifactPath string, decision gateDecision) ClauseOutcome {
+	return ClauseOutcome{
+		NotApplicable:  true,
+		FailureDetail:  decision.Reason,
+		ArtifactPath:   artifactPath,
+		Origin:         clause.Origin,
+		ApplicableWhen: decision.Report,
+	}
+}
+
+func gateUnknownOutcome(clause *compiled.CompiledClause, artifactPath string, decision gateDecision) ClauseOutcome {
+	return ClauseOutcome{
+		Unknown:           true,
+		FailureKind:       FailureKindInsufficientEvidence,
+		FailureDetail:     fmt.Sprintf("insufficient evidence: %s absent from artifact", decision.Unknown.Path),
+		ArtifactPath:      artifactPath,
+		Origin:            clause.Origin,
+		ConditionPath:     decision.Unknown.Path,
+		ConditionExpected: decision.Unknown.Expected,
+		ConditionActual:   decision.Unknown.Actual,
+		ConditionDelta:    decision.Unknown.Delta,
+		ApplicableWhen:    decision.Report,
 	}
 }
 
@@ -549,13 +864,31 @@ func evaluateConditionsWithDetails(conditions []compiled.CompiledCondition, body
 }
 
 func evaluateConditionsWithDetailsAt(conditions []compiled.CompiledCondition, body any, now time.Time) ConditionResult {
+	return evaluateConditionsOn(conditions, body, nil, now)
+}
+
+// evaluateConditionsOn is evaluateConditionsWithDetailsAt for a clause whose
+// gate admitted some elements of its list. Conditions that read that list
+// (Element set) count only the admitted elements.
+func evaluateConditionsOn(conditions []compiled.CompiledCondition, body any, admitted []any, now time.Time) ConditionResult {
 	if len(conditions) == 0 {
 		return ConditionResult{Verdict: VerdictTrue, Detail: nil}
 	}
 
+	evaluate := func(cond *compiled.CompiledCondition) (Verdict, *ConditionFailure) {
+		if cond.Element == nil {
+			return evaluateSingleConditionAt(cond, body, now)
+		}
+		// The admitted elements become the root list, so the cardinality
+		// rules below see only them.
+		onAdmitted := *cond
+		onAdmitted.Expr = append(jp.R().W(), cond.Element[1:]...)
+		onAdmitted.BaseExpr = jp.R()
+		return evaluateSingleConditionAt(&onAdmitted, admitted, now)
+	}
+
 	// Always capture the first condition's details for display
-	firstCond := conditions[0]
-	firstVerdict, firstDetail := evaluateSingleConditionAt(&firstCond, body, now)
+	firstVerdict, firstDetail := evaluate(&conditions[0])
 	checks := []ConditionCheck{conditionCheckFromFailure(firstDetail, firstVerdict)}
 
 	// A definite false decides immediately; an unknown is recorded but later
@@ -567,8 +900,7 @@ func evaluateConditionsWithDetailsAt(conditions []compiled.CompiledCondition, bo
 	sawUnknown := firstVerdict == VerdictUnknown
 
 	for i := 1; i < len(conditions); i++ {
-		cond := &conditions[i]
-		verdict, detail := evaluateSingleConditionAt(cond, body, now)
+		verdict, detail := evaluate(&conditions[i])
 		checks = append(checks, conditionCheckFromFailure(detail, verdict))
 		if verdict == VerdictFalse {
 			return ConditionResult{Verdict: VerdictFalse, Detail: detail, Checks: checks}
@@ -916,7 +1248,8 @@ func selectBestFailureOutcome(outcomes []ClauseOutcome) ClauseOutcome {
 }
 
 // selectBestFailureIndex returns the index of the most informative failure outcome.
-// Used to mark the selected check in any_of failures.
+// Used to mark the selected check in any_of failures. Outcomes that were set
+// aside as not applicable are never selected.
 func selectBestFailureIndex(outcomes []ClauseOutcome) int {
 	// First priority: condition failures with details
 	for i, o := range outcomes {
@@ -927,14 +1260,16 @@ func selectBestFailureIndex(outcomes []ClauseOutcome) int {
 
 	// Second priority: any failure with a detail message
 	for i, o := range outcomes {
-		if o.FailureDetail != "" {
+		if !o.NotApplicable && o.FailureDetail != "" {
 			return i
 		}
 	}
 
-	// Fallback: first outcome
-	if len(outcomes) > 0 {
-		return 0
+	// Fallback: first outcome that applies
+	for i, o := range outcomes {
+		if !o.NotApplicable {
+			return i
+		}
 	}
 	return -1
 }

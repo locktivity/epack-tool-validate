@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/locktivity/epack-tool-validate/internal/condition"
+	"github.com/locktivity/epack-tool-validate/internal/diagnostic"
 	"github.com/locktivity/epack-tool-validate/internal/profile/raw"
 )
 
@@ -596,5 +597,305 @@ func TestDiagnose_ReportsEveryFailureInDocumentOrder(t *testing.T) {
 func TestDiagnose_ValidProfileHasNoFindings(t *testing.T) {
 	if diags := Diagnose(makeValidRawProfile(), "profile.yaml"); len(diags) != 0 {
 		t.Errorf("Diagnose = %v", diags)
+	}
+}
+
+// gateProfile parses a one-requirement any_of profile from the YAML of its
+// clauses, indented as list items under any_of.
+func gateProfile(t *testing.T, clauses string) *raw.RawProfile {
+	t.Helper()
+	profile, err := raw.ParseProfileFromBytes([]byte(`
+id: p
+name: P
+version: "1.0.0"
+requirements:
+  - id: R
+    name: R
+    satisfied_by:
+      any_of:
+` + clauses))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return profile
+}
+
+const perAccountClause = `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.accounts[*].iam.user_count
+                op: gte
+                value: 1
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $.provider
+                op: neq
+                value: other
+              - path: $.accounts[*].iam.mfa_coverage_pct
+                op: gte
+                value: 100
+                cardinality: all
+`
+
+func TestCompile_ApplicableWhen(t *testing.T) {
+	t.Run("gate-only clause compiles on its own type", func(t *testing.T) {
+		compiled, err := Compile(gateProfile(t, `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+              - path: $.accounts[*].iam.user_count
+                op: eq
+                value: 0
+                cardinality: all
+`), "p.yaml")
+		if err != nil {
+			t.Fatalf("Compile() error: %v", err)
+		}
+		clause := compiled.Requirements[0].Clauses[0]
+		if clause.Gate == nil || clause.Gate.Schema != "evidencepack/cloud-posture@v1" {
+			t.Fatalf("Gate = %+v, want one on the clause's own type", clause.Gate)
+		}
+		if len(clause.Gate.Conditions) != 2 || clause.Gate.HasEach() || len(clause.Conditions) != 0 {
+			t.Errorf("gate conditions %d, each %v, clause conditions %d", len(clause.Gate.Conditions), clause.Gate.HasEach(), len(clause.Conditions))
+		}
+	})
+
+	t.Run("gate on another type compiles", func(t *testing.T) {
+		compiled, err := Compile(gateProfile(t, `        - type: evidencepack/settings@v1
+          applicable_when:
+            type: evidencepack/cloud-posture@v1
+            all:
+              - path: $.workforce_sign_in.in_use
+                op: eq
+                value: true
+          metadata_conditions:
+            all:
+              - path: $.metadata.captured_on
+                op: max_age_days
+                value: 365
+`), "p.yaml")
+		if err != nil {
+			t.Fatalf("Compile() error: %v", err)
+		}
+		if gate := compiled.Requirements[0].Clauses[0].Gate; gate.Schema != "evidencepack/cloud-posture@v1" {
+			t.Errorf("Gate.Schema = %q", gate.Schema)
+		}
+	})
+
+	t.Run("each is allowed when the gate names the clause's own type", func(t *testing.T) {
+		clause := strings.Replace(perAccountClause, "          applicable_when:\n", "          applicable_when:\n            type: evidencepack/cloud-posture@v1\n", 1)
+		compiled, err := Compile(gateProfile(t, clause), "p.yaml")
+		if err != nil {
+			t.Fatalf("Compile() error: %v", err)
+		}
+		if !compiled.Requirements[0].Clauses[0].Gate.HasEach() {
+			t.Error("the gate should check each element")
+		}
+	})
+
+	t.Run("each binds the gate and the clause to one list", func(t *testing.T) {
+		compiled, err := Compile(gateProfile(t, perAccountClause), "p.yaml")
+		if err != nil {
+			t.Fatalf("Compile() error: %v", err)
+		}
+		clause := compiled.Requirements[0].Clauses[0]
+		if !clause.Gate.HasEach() || clause.Gate.List.String() != "$.accounts" {
+			t.Fatalf("Gate.List = %v", clause.Gate.List)
+		}
+		each := clause.Gate.Conditions[0]
+		if each.Cardinality != CardinalityEach || each.Element.String() != "$.iam.user_count" {
+			t.Errorf("each condition = %v, element %v", each.Cardinality, each.Element)
+		}
+		if clause.Conditions[0].Element != nil {
+			t.Errorf("a single-valued clause condition should not read the list")
+		}
+		if got := clause.Conditions[1].Element; got == nil || got.String() != "$.iam.mfa_coverage_pct" {
+			t.Errorf("list condition element = %v", got)
+		}
+	})
+}
+
+func TestDiagnose_ApplicableWhenErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		clauses string
+		code    string
+		list    string
+		index   int
+	}{
+		{
+			name: "each outside a gate",
+			clauses: `        - type: evidencepack/cloud-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.mfa_coverage_pct
+                op: gte
+                value: 100
+                cardinality: each
+`,
+			code: diagnostic.CodeInvalidCardinality, list: diagnostic.ListMetadataConditions, index: 0,
+		},
+		{
+			name: "each on a gate of another type",
+			clauses: `        - type: evidencepack/settings@v1
+          applicable_when:
+            type: evidencepack/cloud-posture@v1
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+              - path: $.accounts[*].iam.user_count
+                op: gte
+                value: 1
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $.captured_on
+                op: exists
+`,
+			code: diagnostic.CodeInvalidGate, list: diagnostic.ListApplicableWhen, index: 1,
+		},
+		{
+			name: "each on a clause with no conditions",
+			clauses: `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.accounts[*].iam.user_count
+                op: gte
+                value: 1
+                cardinality: each
+`,
+			code: diagnostic.CodeInvalidGate, list: diagnostic.ListApplicableWhen, index: 0,
+		},
+		{
+			name: "each path with two wildcards",
+			clauses: `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.accounts[*].regions[*].enabled
+                op: eq
+                value: true
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+`,
+			code: diagnostic.CodeInvalidGate, list: diagnostic.ListApplicableWhen, index: 0,
+		},
+		{
+			name: "each path with no wildcard",
+			clauses: `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+`,
+			code: diagnostic.CodeInvalidGate, list: diagnostic.ListApplicableWhen, index: 0,
+		},
+		{
+			name: "each conditions on different lists",
+			clauses: `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.accounts[*].iam.user_count
+                op: gte
+                value: 1
+                cardinality: each
+              - path: $.regions[*].enabled
+                op: eq
+                value: true
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.mfa_coverage_pct
+                op: gte
+                value: 100
+                cardinality: all
+`,
+			code: diagnostic.CodeInvalidGate, list: diagnostic.ListApplicableWhen, index: 1,
+		},
+		{
+			name: "list condition on another list",
+			clauses: `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.accounts[*].iam.user_count
+                op: gte
+                value: 1
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.mfa_coverage_pct
+                op: gte
+                value: 100
+                cardinality: all
+              - path: $.domains[*].dmarc.policy
+                op: eq
+                value: reject
+                cardinality: all
+`,
+			code: diagnostic.CodeInvalidGate, list: diagnostic.ListMetadataConditions, index: 1,
+		},
+		{
+			name: "list condition with recursive descent",
+			clauses: `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.accounts[*].iam.user_count
+                op: gte
+                value: 1
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $..mfa_coverage_pct
+                op: gte
+                value: 100
+                cardinality: all
+`,
+			code: diagnostic.CodeInvalidGate, list: diagnostic.ListMetadataConditions, index: 0,
+		},
+		{
+			name: "gate with no conditions",
+			clauses: `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            type: evidencepack/cloud-posture@v1
+`,
+			code: diagnostic.CodeInvalidGate, list: diagnostic.ListApplicableWhen, index: -1,
+		},
+		{
+			name: "invalid operator inside a gate",
+			clauses: `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.provider
+                op: like
+                value: aws
+`,
+			code: diagnostic.CodeInvalidOperator, list: diagnostic.ListApplicableWhen, index: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			diags := Diagnose(gateProfile(t, tt.clauses), "p.yaml")
+			if len(diags) != 1 {
+				t.Fatalf("Diagnose = %v, want one finding", diags)
+			}
+			loc := diags[0].Location
+			if diags[0].Code != tt.code || loc.ConditionList != tt.list || loc.ConditionIndex != tt.index || loc.ClauseIndex != 0 || loc.RequirementID != "R" {
+				t.Errorf("got %s at %+v, want %s in %s[%d]: %s", diags[0].Code, loc, tt.code, tt.list, tt.index, diags[0].Message)
+			}
+		})
 	}
 }

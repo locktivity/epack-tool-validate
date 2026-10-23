@@ -22,6 +22,7 @@ testdata/
 | `invalid-both-modes.yaml` | Invalid: has both `any_of` and `all_of` |
 | `invalid-duplicate-id.yaml` | Invalid: duplicate requirement IDs |
 | `cloud-baseline.yaml` | Cloud posture rules over the normalized cloud-posture artifact; pairs with `missing-metrics-pack` |
+| `cloud-access.yaml` | MFA and access key rotation with `applicable_when`; the validator's truth table tests and the lint tests read it |
 
 ## Overlays
 

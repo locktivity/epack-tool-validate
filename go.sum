@@ -1,7 +1,7 @@
 github.com/dlclark/regexp2 v1.11.0 h1:G/nrcoOa7ZXlpoa/91N3X7mM3r8eIlMBBJZvsz/mxKI=
 github.com/dlclark/regexp2 v1.11.0/go.mod h1:DHkYz0B9wPfa6wondMfaivmHpzrQ3v9q8cnmRbL6yW8=
-github.com/locktivity/epack v0.9.5 h1:T6TTbTRiRnX4kRqsl/TyOEfp34GqSW+t9tz/NvBdiFk=
-github.com/locktivity/epack v0.9.5/go.mod h1:Ikc+QzXpnNYXh306vW73YKHOcnMK/34AVAhL42cdqKo=
+github.com/locktivity/epack v0.9.7 h1:e4HaLDs8N2aUgsCJz35fmVYicJAfiGmH4Vu2oUnoMIE=
+github.com/locktivity/epack v0.9.7/go.mod h1:Ikc+QzXpnNYXh306vW73YKHOcnMK/34AVAhL42cdqKo=
 github.com/ohler55/ojg v1.24.1 h1:PaVLelrNgT5/0ppPaUtey54tOVp245z33fkhL2jljjY=
 github.com/ohler55/ojg v1.24.1/go.mod h1:gQhDVpQLqrmnd2eqGAvJtn+NfKoYJbe/A4Sj3/Vro4o=
 github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 h1:KRzFb2m7YtdldCEkzs6KqmJw4nqEVZGK7IN2kJkjTuQ=

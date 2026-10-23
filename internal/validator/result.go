@@ -3,7 +3,7 @@ package validator
 
 // Result is the overall validation result.
 type Result struct {
-	Status           string                            `json:"status"` // "pass" | "fail" | "unknown"
+	Status           string                            `json:"status"` // "pass" | "fail" | "unknown"; manual and not_applicable requirements never change it
 	Profile          ProfileInfo                       `json:"profile"`
 	ValidatedAt      string                            `json:"validated_at"`       // RFC3339
 	ValidatedAtLabel string                            `json:"validated_at_label"` // "just now", etc.
@@ -26,25 +26,29 @@ type ProfileInfo struct {
 
 // Summary provides aggregate counts. Unknown counts requirements whose
 // evidence was absent: they are neither passed nor failed. Manual counts
-// requirements answered by asserted support and human review; they are never
-// scored, so Total minus Manual is the machine-checked denominator.
+// requirements answered by asserted support and human review, and
+// NotApplicable counts requirements no clause applied to. Neither is scored,
+// so Total minus Manual minus NotApplicable is the machine-checked
+// denominator.
 type Summary struct {
-	Total    int `json:"total"`
-	Passed   int `json:"passed"`
-	Failed   int `json:"failed"`
-	Missing  int `json:"missing"`
-	Unknown  int `json:"unknown"`
-	Manual   int `json:"manual,omitempty"`
-	Warnings int `json:"warnings"`
+	Total         int `json:"total"`
+	Passed        int `json:"passed"`
+	Failed        int `json:"failed"`
+	Missing       int `json:"missing"`
+	Unknown       int `json:"unknown"`
+	Manual        int `json:"manual,omitempty"`
+	NotApplicable int `json:"not_applicable,omitempty"`
+	Warnings      int `json:"warnings"`
 }
 
 // CategorySummary provides per-category counts.
 type CategorySummary struct {
-	Passed  int `json:"passed"`
-	Failed  int `json:"failed"`
-	Missing int `json:"missing"`
-	Unknown int `json:"unknown"`
-	Manual  int `json:"manual,omitempty"`
+	Passed        int `json:"passed"`
+	Failed        int `json:"failed"`
+	Missing       int `json:"missing"`
+	Unknown       int `json:"unknown"`
+	Manual        int `json:"manual,omitempty"`
+	NotApplicable int `json:"not_applicable,omitempty"`
 }
 
 // KeyFailure identifies a notable failure.
@@ -62,7 +66,7 @@ type RequirementResult struct {
 	Description string         `json:"description,omitempty"`
 	Category    string         `json:"category,omitempty"`
 	Severity    string         `json:"severity,omitempty"`     // "critical" | "high" | "medium" | "low"
-	Status      string         `json:"status"`                 // "pass" | "fail" | "unknown" | "manual"
+	Status      string         `json:"status"`                 // "pass" | "fail" | "unknown" | "manual" | "not_applicable"
 	FailureKind string         `json:"failure_kind,omitempty"` // "missing" | "stale" | "freshness_missing" | "condition" | "insufficient_evidence"
 	Mode        string         `json:"mode,omitempty"`         // "any_of" | "all_of" - how clauses are evaluated
 	Expected    *ExpectedValue `json:"expected,omitempty"`     // Structured expected value
@@ -76,14 +80,26 @@ type RequirementResult struct {
 
 // CheckResult describes how one clause was evaluated.
 type CheckResult struct {
-	ClauseIndex int              `json:"clause_index"`
-	Schema      string           `json:"schema"`
-	Status      string           `json:"status"` // "pass" | "fail" | "unknown" | "missing" | "stale" | "freshness_missing"
-	Severity    string           `json:"severity,omitempty"`
-	Selected    bool             `json:"selected,omitempty"` // True if this check determined the requirement's outcome
-	Artifact    string           `json:"artifact,omitempty"`
-	Message     string           `json:"message,omitempty"`
-	Conditions  []ConditionCheck `json:"conditions,omitempty"`
+	ClauseIndex    int              `json:"clause_index"`
+	Schema         string           `json:"schema"`
+	Status         string           `json:"status"` // "pass" | "fail" | "unknown" | "missing" | "stale" | "freshness_missing" | "not_applicable"
+	Severity       string           `json:"severity,omitempty"`
+	Selected       bool             `json:"selected,omitempty"` // True if this check determined the requirement's outcome
+	Artifact       string           `json:"artifact,omitempty"`
+	Message        string           `json:"message,omitempty"`
+	ApplicableWhen *ApplicableWhen  `json:"applicable_when,omitempty"`
+	Conditions     []ConditionCheck `json:"conditions,omitempty"`
+}
+
+// ApplicableWhen reports how a check's applicable_when was decided, on the
+// artifact that decided the check. Conditions lists every gate condition in
+// profile order. Skipped and Evaluated count list elements and appear only
+// when the gate has cardinality each conditions.
+type ApplicableWhen struct {
+	Type       string           `json:"type"`
+	Conditions []ConditionCheck `json:"conditions,omitempty"`
+	Skipped    *int             `json:"skipped,omitempty"`
+	Evaluated  *int             `json:"evaluated,omitempty"`
 }
 
 // ConditionCheck captures the result of one evaluated condition. Unknown true

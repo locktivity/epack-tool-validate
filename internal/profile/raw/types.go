@@ -41,7 +41,14 @@ type RawClause struct {
 	Type               string         `yaml:"type"`
 	Severity           string         `yaml:"severity,omitempty"` // "critical"|"high"|"medium"|"low" OR empty=pass
 	Freshness          *RawFreshness  `yaml:"freshness,omitempty"`
+	ApplicableWhen     *RawGate       `yaml:"applicable_when,omitempty"`
 	MetadataConditions *RawConditions `yaml:"metadata_conditions,omitempty"`
+}
+
+// RawGate says when a clause applies. Type defaults to the clause's own type.
+type RawGate struct {
+	Type string         `yaml:"type,omitempty"`
+	All  []RawCondition `yaml:"all,omitempty"`
 }
 
 // RawFreshness specifies freshness requirements.
@@ -59,7 +66,7 @@ type RawCondition struct {
 	Path        string `yaml:"path"`
 	Op          string `yaml:"op"`
 	Value       any    `yaml:"value"`
-	Cardinality string `yaml:"cardinality,omitempty"` // "all"|"any"|"none" for multi-value paths
+	Cardinality string `yaml:"cardinality,omitempty"` // "all"|"any"|"none" for multi-value paths, "each" in applicable_when
 }
 
 // RawOverlay mirrors the YAML structure of an overlay file.

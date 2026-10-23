@@ -121,6 +121,7 @@ func (l *linter) add(d Diagnostic) {
 type conditionKey struct {
 	requirement string
 	clause      int
+	list        string // diagnostic.ListMetadataConditions or diagnostic.ListApplicableWhen
 	condition   int
 }
 
@@ -169,14 +170,19 @@ func (l *linter) compileFindings(p *raw.RawProfile) map[conditionKey]bool {
 			File:        d.Location.File,
 			Requirement: d.Location.RequirementID,
 		}
-		if isConditionCode(d.Code) {
-			broken[conditionKey{d.Location.RequirementID, d.Location.ClauseIndex, d.Location.ConditionIndex}] = true
-			finding.Location = l.conditionLocation(p, d.Location.RequirementID, d.Location.ClauseIndex, d.Location.ConditionIndex)
-		} else if isClauseCode(d.Code) {
-			broken[conditionKey{d.Location.RequirementID, d.Location.ClauseIndex, -1}] = true
+		switch {
+		case d.Code == diagnostic.CodeInvalidGate:
+			// The paths in a misused gate still resolve, so nothing is
+			// marked broken.
+			finding.Location = l.conditionLocation(p, d.Location.RequirementID, d.Location.ClauseIndex, d.Location.ConditionList, d.Location.ConditionIndex)
+		case isConditionCode(d.Code):
+			broken[conditionKey{d.Location.RequirementID, d.Location.ClauseIndex, d.Location.ConditionList, d.Location.ConditionIndex}] = true
+			finding.Location = l.conditionLocation(p, d.Location.RequirementID, d.Location.ClauseIndex, d.Location.ConditionList, d.Location.ConditionIndex)
+		case isClauseCode(d.Code):
+			broken[conditionKey{d.Location.RequirementID, d.Location.ClauseIndex, "", -1}] = true
 			finding.Location = l.clauseLocation(p, d.Location.RequirementID, d.Location.ClauseIndex)
-		} else {
-			broken[conditionKey{d.Location.RequirementID, -1, -1}] = true
+		default:
+			broken[conditionKey{d.Location.RequirementID, -1, "", -1}] = true
 		}
 		l.add(finding)
 	}
@@ -200,12 +206,12 @@ func isClauseCode(code string) bool {
 }
 
 func (l *linter) checkRequirement(req *raw.RawRequirement, broken map[conditionKey]bool) {
-	if req.Manual || broken[conditionKey{req.ID, -1, -1}] {
+	if req.Manual || broken[conditionKey{req.ID, -1, "", -1}] {
 		return
 	}
 	mode, clauses := clausesOf(req)
 	for ci, clause := range clauses {
-		if broken[conditionKey{req.ID, ci, -1}] {
+		if broken[conditionKey{req.ID, ci, "", -1}] {
 			continue
 		}
 		if clause.Freshness != nil && clause.Freshness.MaxAgeDays <= 0 {
@@ -219,28 +225,51 @@ func (l *linter) checkRequirement(req *raw.RawRequirement, broken map[conditionK
 				Type:        clause.Type,
 			})
 		}
-		if clause.MetadataConditions == nil || len(clause.MetadataConditions.All) == 0 {
+		hasConditions := clause.MetadataConditions != nil && len(clause.MetadataConditions.All) > 0
+		if gate := clause.ApplicableWhen; gate != nil && len(gate.All) > 0 {
+			typ := gate.Type
+			if typ == "" {
+				typ = clause.Type
+			}
+			location := fmt.Sprintf("%s[%d].%s", mode, ci, diagnostic.ListApplicableWhen)
+			schema := l.registry.Lookup(typ)
+			// A gate on the clause's own type shares the clause's finding.
+			if schema == nil && (typ != clause.Type || !hasConditions) {
+				l.typeUnchecked(req, typ, location)
+			}
+			for gi := range gate.All {
+				if broken[conditionKey{req.ID, ci, diagnostic.ListApplicableWhen, gi}] {
+					continue
+				}
+				l.checkCondition(req, schema, typ, &gate.All[gi], fmt.Sprintf("%s.all[%d]", location, gi))
+			}
+		}
+		if !hasConditions {
 			continue
 		}
 		schema := l.registry.Lookup(clause.Type)
 		if schema == nil {
-			l.add(Diagnostic{
-				Severity:    SeverityWarning,
-				Code:        CodeTypeUnchecked,
-				Message:     fmt.Sprintf("no schema is known for %s, so its paths were not checked; pass one under the schemas option", clause.Type),
-				File:        l.fileFor(req),
-				Requirement: req.ID,
-				Location:    fmt.Sprintf("%s[%d]", mode, ci),
-				Type:        clause.Type,
-			})
+			l.typeUnchecked(req, clause.Type, fmt.Sprintf("%s[%d]", mode, ci))
 		}
 		for di := range clause.MetadataConditions.All {
-			if broken[conditionKey{req.ID, ci, di}] {
+			if broken[conditionKey{req.ID, ci, diagnostic.ListMetadataConditions, di}] {
 				continue
 			}
 			l.checkCondition(req, schema, clause.Type, &clause.MetadataConditions.All[di], fmt.Sprintf("%s[%d].metadata_conditions.all[%d]", mode, ci, di))
 		}
 	}
+}
+
+func (l *linter) typeUnchecked(req *raw.RawRequirement, typ, location string) {
+	l.add(Diagnostic{
+		Severity:    SeverityWarning,
+		Code:        CodeTypeUnchecked,
+		Message:     fmt.Sprintf("no schema is known for %s, so its paths were not checked; pass one under the schemas option", typ),
+		File:        l.fileFor(req),
+		Requirement: req.ID,
+		Location:    location,
+		Type:        typ,
+	})
 }
 
 func (l *linter) checkCondition(req *raw.RawRequirement, schema *evidenceschema.Schema, typ string, cond *raw.RawCondition, location string) {
@@ -423,10 +452,18 @@ func (l *linter) clauseLocation(p *raw.RawProfile, reqID string, clause int) str
 	return fmt.Sprintf("%s[%d]", mode, clause)
 }
 
-func (l *linter) conditionLocation(p *raw.RawProfile, reqID string, clause, cond int) string {
+// conditionLocation locates a finding in one of a clause's condition lists,
+// or at the list itself when cond is negative.
+func (l *linter) conditionLocation(p *raw.RawProfile, reqID string, clause int, list string, cond int) string {
 	base := l.clauseLocation(p, reqID, clause)
 	if base == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s.metadata_conditions.all[%d]", base, cond)
+	if list == "" {
+		list = diagnostic.ListMetadataConditions
+	}
+	if cond < 0 {
+		return fmt.Sprintf("%s.%s", base, list)
+	}
+	return fmt.Sprintf("%s.%s.all[%d]", base, list, cond)
 }

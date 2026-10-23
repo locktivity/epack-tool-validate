@@ -38,9 +38,16 @@ type Location struct {
 	File           string // Source file path
 	RequirementID  string // If applicable
 	ClauseIndex    int    // If applicable (-1 if not)
+	ConditionList  string // ListMetadataConditions or ListApplicableWhen, if the issue is in one
 	ConditionIndex int    // If applicable (-1 if not)
 	Line           int    // YAML line number if known (-1 if not)
 }
+
+// Condition lists a clause can hold, named by their YAML keys.
+const (
+	ListMetadataConditions = "metadata_conditions"
+	ListApplicableWhen     = "applicable_when"
+)
 
 // NewLocation creates a location with default values for optional fields.
 func NewLocation(file string) Location {
@@ -81,6 +88,7 @@ const (
 	CodeInvalidOperator      = "INVALID_OPERATOR"
 	CodeInvalidJSONPath      = "INVALID_JSONPATH"
 	CodeInvalidCardinality   = "INVALID_CARDINALITY"
+	CodeInvalidGate          = "INVALID_GATE"
 	CodeDuplicateRequirement = "DUPLICATE_REQUIREMENT"
 )
 

@@ -131,6 +131,7 @@ func TestDiagnosticCodes(t *testing.T) {
 		CodeInvalidSeverity,
 		CodeInvalidOperator,
 		CodeInvalidJSONPath,
+		CodeInvalidGate,
 		CodeDuplicateRequirement,
 	}
 

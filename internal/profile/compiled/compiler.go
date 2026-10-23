@@ -206,18 +206,45 @@ func compileClause(clause *raw.RawClause, reqID string, idx int, sourceFile stri
 		compiled.MaxAgeDays = &maxAge
 	}
 
-	// Compile conditions
 	var diags []diagnostic.Diagnostic
+	if clause.ApplicableWhen != nil {
+		gate, gateDiags := compileGate(clause.ApplicableWhen, clause.Type, reqID, idx, sourceFile)
+		compiled.Gate = gate
+		diags = append(diags, gateDiags...)
+	}
+
+	// Compile conditions
+	var rawConditions []raw.RawCondition
 	if clause.MetadataConditions != nil {
-		for j, cond := range clause.MetadataConditions.All {
-			compiledCond, condDiag := compileCondition(&cond, reqID, idx, j, sourceFile)
-			if condDiag != nil {
-				diags = append(diags, *condDiag)
-				continue
+		rawConditions = clause.MetadataConditions.All
+	}
+	for j, cond := range rawConditions {
+		compiledCond, condDiag := compileCondition(&cond, reqID, idx, diagnostic.ListMetadataConditions, j, sourceFile)
+		if condDiag == nil && compiled.Gate.HasEach() && compiledCond.IsMulti {
+			condDiag = bindToGateList(compiledCond, compiled.Gate.List, reqID, idx, j, sourceFile)
+		}
+		if condDiag != nil {
+			diags = append(diags, *condDiag)
+			continue
+		}
+		compiled.Conditions = append(compiled.Conditions, *compiledCond)
+	}
+
+	// A clause with no conditions passes whenever it applies. With each, it
+	// would pass as soon as one element qualified and say nothing of the rest.
+	if compiled.Gate.HasEach() && len(rawConditions) == 0 {
+		for j, cond := range clause.ApplicableWhen.All {
+			if ValidCardinalities[cond.Cardinality] == CardinalityEach {
+				diags = append(diags, diagnostic.Errorf(
+					diagnostic.CodeInvalidGate, gateConditionLocation(sourceFile, reqID, idx, j),
+					"requirement %s, clause %d, applicable_when condition %d: cardinality each needs metadata_conditions to grade the elements it admits",
+					reqID, idx, j,
+				))
+				break
 			}
-			compiled.Conditions = append(compiled.Conditions, *compiledCond)
 		}
 	}
+
 	if len(diags) > 0 {
 		return nil, diags
 	}
@@ -225,21 +252,105 @@ func compileClause(clause *raw.RawClause, reqID string, idx int, sourceFile stri
 	return compiled, nil
 }
 
-func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx int, sourceFile string) (*CompiledCondition, *diagnostic.Diagnostic) {
+// compileGate compiles applicable_when. Its each conditions must read the
+// clause's own type and range over one shared list.
+func compileGate(gate *raw.RawGate, clauseType, reqID string, clauseIdx int, sourceFile string) (*CompiledGate, []diagnostic.Diagnostic) {
+	compiled := &CompiledGate{Schema: gate.Type}
+	if compiled.Schema == "" {
+		compiled.Schema = clauseType
+	}
+
+	if len(gate.All) == 0 {
+		loc := gateConditionLocation(sourceFile, reqID, clauseIdx, -1)
+		return compiled, []diagnostic.Diagnostic{diagnostic.Errorf(
+			diagnostic.CodeInvalidGate, loc,
+			"requirement %s, clause %d: applicable_when has no conditions", reqID, clauseIdx,
+		)}
+	}
+
+	var diags []diagnostic.Diagnostic
+	for j, cond := range gate.All {
+		compiledCond, condDiag := compileCondition(&cond, reqID, clauseIdx, diagnostic.ListApplicableWhen, j, sourceFile)
+		if condDiag == nil && compiledCond.Cardinality == CardinalityEach {
+			loc := gateConditionLocation(sourceFile, reqID, clauseIdx, j)
+			switch {
+			case compiled.Schema != clauseType:
+				d := diagnostic.Errorf(
+					diagnostic.CodeInvalidGate, loc,
+					"requirement %s, clause %d, applicable_when condition %d: cardinality each needs applicable_when to read the clause's own type, %s, not %s",
+					reqID, clauseIdx, j, clauseType, compiled.Schema,
+				)
+				condDiag = &d
+			case compiled.List == nil:
+				compiled.List = compiledCond.BaseExpr
+			case compiledCond.BaseExpr.String() != compiled.List.String():
+				d := diagnostic.Errorf(
+					diagnostic.CodeInvalidGate, loc,
+					"requirement %s, clause %d, applicable_when condition %d: every cardinality each condition must range over one list; %s ranges over %s, not %s",
+					reqID, clauseIdx, j, cond.Path, compiledCond.BaseExpr, compiled.List,
+				)
+				condDiag = &d
+			}
+		}
+		if condDiag != nil {
+			diags = append(diags, *condDiag)
+			continue
+		}
+		compiled.Conditions = append(compiled.Conditions, *compiledCond)
+	}
+	return compiled, diags
+}
+
+// bindToGateList points a clause condition at the gate's list so it counts
+// only the elements the gate admits.
+func bindToGateList(cond *CompiledCondition, list jp.Expr, reqID string, clauseIdx, condIdx int, sourceFile string) *diagnostic.Diagnostic {
+	condList, element, ok := condition.SplitAtWildcard(cond.Expr)
+	if !ok || condList.String() != list.String() {
+		loc := diagnostic.Location{
+			File:           sourceFile,
+			RequirementID:  reqID,
+			ClauseIndex:    clauseIdx,
+			ConditionList:  diagnostic.ListMetadataConditions,
+			ConditionIndex: condIdx,
+		}
+		d := diagnostic.Errorf(
+			diagnostic.CodeInvalidGate, loc,
+			"requirement %s, clause %d, condition %d: applicable_when checks each element of %s, so list conditions must read that list with one [*]; %s does not",
+			reqID, clauseIdx, condIdx, list, cond.Path,
+		)
+		return &d
+	}
+	cond.Element = element
+	return nil
+}
+
+func gateConditionLocation(sourceFile, reqID string, clauseIdx, condIdx int) diagnostic.Location {
+	return diagnostic.Location{
+		File:           sourceFile,
+		RequirementID:  reqID,
+		ClauseIndex:    clauseIdx,
+		ConditionList:  diagnostic.ListApplicableWhen,
+		ConditionIndex: condIdx,
+	}
+}
+
+func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx int, list string, condIdx int, sourceFile string) (*CompiledCondition, *diagnostic.Diagnostic) {
 	loc := diagnostic.Location{
 		File:           sourceFile,
 		RequirementID:  reqID,
 		ClauseIndex:    clauseIdx,
+		ConditionList:  list,
 		ConditionIndex: condIdx,
+	}
+	at := fmt.Sprintf("requirement %s, clause %d, condition %d", reqID, clauseIdx, condIdx)
+	if list == diagnostic.ListApplicableWhen {
+		at = fmt.Sprintf("requirement %s, clause %d, applicable_when condition %d", reqID, clauseIdx, condIdx)
 	}
 
 	// Parse operator
 	op, err := condition.ParseOperator(cond.Op)
 	if err != nil {
-		d := diagnostic.Errorf(
-			diagnostic.CodeInvalidOperator, loc,
-			"requirement %s, clause %d, condition %d: %v", reqID, clauseIdx, condIdx, err,
-		)
+		d := diagnostic.Errorf(diagnostic.CodeInvalidOperator, loc, "%s: %v", at, err)
 		return nil, &d
 	}
 
@@ -247,8 +358,7 @@ func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx i
 		if maxDays, numOK := condition.NormalizeNumeric(cond.Value); !numOK || maxDays < 0 {
 			d := diagnostic.Errorf(
 				diagnostic.CodeInvalidFieldType, loc,
-				"requirement %s, clause %d, condition %d: max_age_days requires a non-negative numeric value, got %v",
-				reqID, clauseIdx, condIdx, cond.Value,
+				"%s: max_age_days requires a non-negative numeric value, got %v", at, cond.Value,
 			)
 			return nil, &d
 		}
@@ -257,10 +367,20 @@ func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx i
 	// Parse cardinality
 	cardinality, ok := ValidCardinalities[cond.Cardinality]
 	if !ok {
+		allowed := "all, any, none, or empty"
+		if list == diagnostic.ListApplicableWhen {
+			allowed = "all, any, none, each, or empty"
+		}
 		d := diagnostic.Errorf(
 			diagnostic.CodeInvalidCardinality, loc,
-			"requirement %s, clause %d, condition %d: invalid cardinality %q (must be all, any, none, or empty)",
-			reqID, clauseIdx, condIdx, cond.Cardinality,
+			"%s: invalid cardinality %q (must be %s)", at, cond.Cardinality, allowed,
+		)
+		return nil, &d
+	}
+	if cardinality == CardinalityEach && list != diagnostic.ListApplicableWhen {
+		d := diagnostic.Errorf(
+			diagnostic.CodeInvalidCardinality, loc,
+			"%s: cardinality each is allowed only in applicable_when", at,
 		)
 		return nil, &d
 	}
@@ -268,6 +388,7 @@ func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx i
 	// Parse JSONPath - allow multi-value if cardinality is specified
 	var expr jp.Expr
 	var baseExpr jp.Expr
+	var element jp.Expr
 	var isMulti bool
 
 	if cardinality != CardinalitySingle {
@@ -275,10 +396,7 @@ func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx i
 		var parseErr error
 		expr, isMulti, parseErr = condition.ParseJSONPathMulti(cond.Path)
 		if parseErr != nil {
-			d := diagnostic.Errorf(
-				diagnostic.CodeInvalidJSONPath, loc,
-				"requirement %s, clause %d, condition %d: %v", reqID, clauseIdx, condIdx, parseErr,
-			)
+			d := diagnostic.Errorf(diagnostic.CodeInvalidJSONPath, loc, "%s: %v", at, parseErr)
 			return nil, &d
 		}
 
@@ -290,15 +408,24 @@ func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx i
 		// presence operators need the count comparison directly.
 		baseExpr = condition.ExtractBasePath(expr)
 		// baseExpr may be nil for recursive descent - that's OK, we'll skip the count check
+
+		if cardinality == CardinalityEach {
+			var split bool
+			baseExpr, element, split = condition.SplitAtWildcard(expr)
+			if !split {
+				d := diagnostic.Errorf(
+					diagnostic.CodeInvalidGate, loc,
+					"%s: cardinality each needs a path with exactly one [*] and no other multi-value syntax, got %q", at, cond.Path,
+				)
+				return nil, &d
+			}
+		}
 	} else {
 		// Single cardinality requires single-value paths
 		var parseErr error
 		expr, parseErr = condition.ParseJSONPath(cond.Path)
 		if parseErr != nil {
-			d := diagnostic.Errorf(
-				diagnostic.CodeInvalidJSONPath, loc,
-				"requirement %s, clause %d, condition %d: %v", reqID, clauseIdx, condIdx, parseErr,
-			)
+			d := diagnostic.Errorf(diagnostic.CodeInvalidJSONPath, loc, "%s: %v", at, parseErr)
 			return nil, &d
 		}
 		isMulti = false
@@ -312,5 +439,6 @@ func compileCondition(cond *raw.RawCondition, reqID string, clauseIdx, condIdx i
 		Expected:    cond.Value,
 		Cardinality: cardinality,
 		IsMulti:     isMulti,
+		Element:     element,
 	}, nil
 }

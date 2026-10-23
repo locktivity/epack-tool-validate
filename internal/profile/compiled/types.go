@@ -53,8 +53,22 @@ type CompiledClause struct {
 	Schema     string              // Artifact schema to match (e.g., "evidencepack/idp-posture@v1")
 	Severity   string              // "critical" | "high" | "medium" | "low" OR empty = pass
 	MaxAgeDays *int                // nil = no freshness check
+	Gate       *CompiledGate       // nil = the clause applies to every artifact
 	Conditions []CompiledCondition // Pre-validated conditions
 	Origin     Origin              // For diagnostics
+}
+
+// CompiledGate decides whether a clause applies (applicable_when).
+type CompiledGate struct {
+	Schema     string              // Artifact type the conditions read; the clause's own unless the profile names another
+	Conditions []CompiledCondition // In profile order; CardinalityEach conditions are decided per element of List
+	List       jp.Expr             // The list every CardinalityEach condition ranges over; nil when there are none
+}
+
+// HasEach reports whether the gate decides conditions per list element.
+// A nil gate has none.
+func (g *CompiledGate) HasEach() bool {
+	return g != nil && g.List != nil
 }
 
 // Cardinality specifies how multi-value JSONPath results should be evaluated.
@@ -65,6 +79,7 @@ const (
 	CardinalityAll                       // All values must satisfy condition
 	CardinalityAny                       // At least one value must satisfy
 	CardinalityNone                      // No value should satisfy (all must fail)
+	CardinalityEach                      // applicable_when only: decided per list element
 )
 
 func (c Cardinality) String() string {
@@ -77,6 +92,8 @@ func (c Cardinality) String() string {
 		return "any"
 	case CardinalityNone:
 		return "none"
+	case CardinalityEach:
+		return "each"
 	default:
 		return "unknown"
 	}
@@ -89,6 +106,7 @@ var ValidCardinalities = map[string]Cardinality{
 	"all":    CardinalityAll,
 	"any":    CardinalityAny,
 	"none":   CardinalityNone,
+	"each":   CardinalityEach,
 }
 
 // CompiledCondition is a single condition ready for evaluation.
@@ -100,6 +118,10 @@ type CompiledCondition struct {
 	Expected    any                // Value to compare against
 	Cardinality Cardinality        // How to handle multi-value results
 	IsMulti     bool               // True if path may return multiple values
+	// Element is the path below the [*], relative to one list element. Set on
+	// CardinalityEach conditions and, in a clause whose gate has them, on the
+	// clause conditions that read the gate's list.
+	Element jp.Expr
 }
 
 // Origin tracks where a clause came from for diagnostics.

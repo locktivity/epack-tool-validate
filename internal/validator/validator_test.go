@@ -6,6 +6,7 @@ import (
 
 	"github.com/locktivity/epack-tool-validate/internal/condition"
 	"github.com/locktivity/epack-tool-validate/internal/profile/compiled"
+	"github.com/locktivity/epack-tool-validate/internal/profile/raw"
 )
 
 func makeTestContext() *Context {
@@ -2784,5 +2785,582 @@ func TestValidate_AllManualProfilePassesVacuously(t *testing.T) {
 	}
 	if result.Summary.Manual != 1 || result.Summary.Passed != 0 {
 		t.Errorf("Summary = %+v", result.Summary)
+	}
+}
+
+// compileProfile compiles a profile written in YAML, the way the tool loads one.
+func compileProfile(t *testing.T, yaml string) *compiled.CompiledProfile {
+	t.Helper()
+	parsed, err := raw.ParseProfileFromBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	profile, err := compiled.Compile(parsed, "profile.yaml")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	return profile
+}
+
+// packOf indexes artifacts by schema in the order given.
+func packOf(artifacts ...IndexedArtifact) *PackIndex {
+	pack := &PackIndex{BySchema: map[string][]IndexedArtifact{}}
+	for _, a := range artifacts {
+		pack.BySchema[a.Schema] = append(pack.BySchema[a.Schema], a)
+	}
+	return pack
+}
+
+func artifactOf(path, schema string, body map[string]any) IndexedArtifact {
+	collected := time.Date(2024, 6, 14, 12, 0, 0, 0, time.UTC)
+	return IndexedArtifact{Path: path, Schema: schema, CollectedAt: &collected, Body: body}
+}
+
+func cloudPosture(path string, body map[string]any) IndexedArtifact {
+	return artifactOf(path, "evidencepack/cloud-posture@v1", body)
+}
+
+func iamAccount(id string, iam map[string]any) map[string]any {
+	return map[string]any{"account_id": id, "iam": iam}
+}
+
+const gateProfileHeader = `id: gates
+name: Gates
+version: "1.0.0"
+requirements:
+  - id: R
+    name: R
+    category: Access
+    satisfied_by:
+`
+
+// perAccountMFA grades MFA only in accounts that have IAM users.
+const perAccountMFA = gateProfileHeader + `      any_of:
+        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.accounts[*].iam.user_count
+                op: gte
+                value: 1
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.mfa_coverage_pct
+                op: gte
+                value: 100
+                cardinality: all
+`
+
+func TestValidate_ApplicableWhen_SameType(t *testing.T) {
+	profile := compileProfile(t, gateProfileHeader+`      any_of:
+        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.root_mfa_enabled
+                op: eq
+                value: true
+                cardinality: all
+`)
+	accounts := []any{iamAccount("1", map[string]any{"root_mfa_enabled": true})}
+	tests := []struct {
+		name, provider, status, check string
+	}{
+		{"condition holds", "aws", "pass", "pass"},
+		{"condition is false", "azure", "not_applicable", "not_applicable"},
+		{"value is absent", "", "unknown", "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := map[string]any{"accounts": accounts}
+			if tt.provider != "" {
+				body["provider"] = tt.provider
+			}
+			result := New().Validate(makeTestContext(), profile, packOf(cloudPosture("artifacts/cloud.json", body)), "")
+			req := result.Requirements[0]
+			if req.Status != tt.status || req.Checks[0].Status != tt.check {
+				t.Fatalf("requirement %s, check %s; want %s, %s", req.Status, req.Checks[0].Status, tt.status, tt.check)
+			}
+			gate := req.Checks[0].ApplicableWhen
+			if gate == nil || gate.Type != "evidencepack/cloud-posture@v1" || len(gate.Conditions) != 1 {
+				t.Fatalf("applicable_when = %+v", gate)
+			}
+			if gate.Skipped != nil || gate.Evaluated != nil {
+				t.Errorf("skipped and evaluated appear only with each: %+v", gate)
+			}
+			if tt.status == "unknown" {
+				if req.FailureKind != "insufficient_evidence" || req.Path != "$.provider" || !gate.Conditions[0].Unknown {
+					t.Errorf("unknown gate: failure_kind %q, path %q, condition %+v", req.FailureKind, req.Path, gate.Conditions[0])
+				}
+			}
+			if tt.status == "not_applicable" && (req.Severity != "" || req.FailureKind != "") {
+				t.Errorf("not applicable is not a failure: severity %q, failure_kind %q", req.Severity, req.FailureKind)
+			}
+		})
+	}
+}
+
+func TestValidate_ApplicableWhen_Each(t *testing.T) {
+	profile := compileProfile(t, perAccountMFA)
+	tests := []struct {
+		name               string
+		accounts           any
+		omitAccounts       bool
+		status             string
+		skipped, evaluated int
+	}{
+		{
+			name: "accounts without IAM users are skipped",
+			accounts: []any{
+				iamAccount("1", map[string]any{"user_count": 0.0, "mfa_coverage_pct": nil}),
+				iamAccount("2", map[string]any{"user_count": 3.0, "mfa_coverage_pct": 100.0}),
+				iamAccount("3", map[string]any{"user_count": 0.0}),
+			},
+			status: "pass", skipped: 2, evaluated: 1,
+		},
+		{
+			name: "a skipped account cannot fail the test",
+			accounts: []any{
+				iamAccount("1", map[string]any{"user_count": 0.0, "mfa_coverage_pct": 0.0}),
+				iamAccount("2", map[string]any{"user_count": 3.0, "mfa_coverage_pct": 100.0}),
+			},
+			status: "pass", skipped: 1, evaluated: 1,
+		},
+		{
+			name: "an admitted account fails it",
+			accounts: []any{
+				iamAccount("1", map[string]any{"user_count": 0.0}),
+				iamAccount("2", map[string]any{"user_count": 4.0, "mfa_coverage_pct": 50.0}),
+			},
+			status: "fail", skipped: 1, evaluated: 1,
+		},
+		{
+			name: "an account with no count is graded on its value",
+			accounts: []any{
+				iamAccount("1", map[string]any{"mfa_coverage_pct": 100.0}),
+				iamAccount("2", map[string]any{"mfa_coverage_pct": 90.0}),
+			},
+			status: "fail", skipped: 0, evaluated: 2,
+		},
+		{
+			name: "an account with no facts keeps the test unknown",
+			accounts: []any{
+				iamAccount("1", map[string]any{"user_count": 2.0, "mfa_coverage_pct": 100.0}),
+				map[string]any{"account_id": "2", "collection_error_code": "AccessDenied", "iam": map[string]any{}},
+			},
+			status: "unknown", skipped: 0, evaluated: 2,
+		},
+		{
+			name: "every account skipped",
+			accounts: []any{
+				iamAccount("1", map[string]any{"user_count": 0.0}),
+				iamAccount("2", map[string]any{"user_count": 0.0}),
+			},
+			status: "not_applicable", skipped: 2, evaluated: 0,
+		},
+		{
+			name:     "no accounts",
+			accounts: []any{},
+			status:   "unknown",
+		},
+		{
+			name:     "a null list",
+			accounts: nil,
+			status:   "unknown",
+		},
+		{
+			name:         "an absent list",
+			omitAccounts: true,
+			status:       "unknown",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := map[string]any{"provider": "aws"}
+			if !tt.omitAccounts {
+				body["accounts"] = tt.accounts
+			}
+			result := New().Validate(makeTestContext(), profile, packOf(cloudPosture("artifacts/cloud.json", body)), "")
+			req := result.Requirements[0]
+			if req.Status != tt.status {
+				t.Fatalf("Status = %q, want %q (%s)", req.Status, tt.status, req.Message)
+			}
+			gate := req.Checks[0].ApplicableWhen
+			if gate.Skipped == nil || gate.Evaluated == nil {
+				t.Fatalf("each reports skipped and evaluated: %+v", gate)
+			}
+			if *gate.Skipped != tt.skipped || *gate.Evaluated != tt.evaluated {
+				t.Errorf("skipped %d, evaluated %d; want %d, %d", *gate.Skipped, *gate.Evaluated, tt.skipped, tt.evaluated)
+			}
+			if tt.status == "unknown" && tt.evaluated == 0 && req.Path != "$.accounts[*].iam.user_count" {
+				t.Errorf("an unusable list reads as the each path absent, got path %q", req.Path)
+			}
+		})
+	}
+}
+
+func TestValidate_ApplicableWhen_EachWithWholeArtifactConditions(t *testing.T) {
+	profile := compileProfile(t, gateProfileHeader+`      any_of:
+        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+              - path: $.accounts[*].iam.user_count
+                op: gte
+                value: 1
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.mfa_coverage_pct
+                op: gte
+                value: 100
+                cardinality: all
+`)
+	noUsers := []any{iamAccount("1", map[string]any{"user_count": 0.0})}
+	tests := []struct {
+		name   string
+		body   map[string]any
+		status string
+	}{
+		{"false wins over the elements", map[string]any{"provider": "azure", "accounts": []any{iamAccount("1", map[string]any{"user_count": 2.0, "mfa_coverage_pct": 50.0})}}, "not_applicable"},
+		{"unknown with every element skipped stays unknown", map[string]any{"accounts": noUsers}, "unknown"},
+		{"true with every element skipped", map[string]any{"provider": "aws", "accounts": noUsers}, "not_applicable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := New().Validate(makeTestContext(), profile, packOf(cloudPosture("artifacts/cloud.json", tt.body)), "")
+			if got := result.Requirements[0].Status; got != tt.status {
+				t.Errorf("Status = %q, want %q", got, tt.status)
+			}
+		})
+	}
+}
+
+func TestValidate_ApplicableWhen_AcrossArtifactsOfTheClauseType(t *testing.T) {
+	profile := compileProfile(t, perAccountMFA)
+	none := cloudPosture("artifacts/none.json", map[string]any{"accounts": []any{iamAccount("1", map[string]any{"user_count": 0.0})}})
+	passing := cloudPosture("artifacts/passing.json", map[string]any{"accounts": []any{iamAccount("1", map[string]any{"user_count": 1.0, "mfa_coverage_pct": 100.0})}})
+	failing := cloudPosture("artifacts/failing.json", map[string]any{"accounts": []any{iamAccount("1", map[string]any{"user_count": 1.0, "mfa_coverage_pct": 10.0})}})
+
+	tests := []struct {
+		name      string
+		artifacts []IndexedArtifact
+		status    string
+		artifact  string
+	}{
+		{"a set-aside artifact does not block a match", []IndexedArtifact{none, passing}, "pass", "artifacts/passing.json"},
+		{"a set-aside artifact does not hide a failure", []IndexedArtifact{none, failing}, "fail", "artifacts/failing.json"},
+		{"every artifact set aside", []IndexedArtifact{none, none}, "not_applicable", "artifacts/none.json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := New().Validate(makeTestContext(), profile, packOf(tt.artifacts...), "")
+			check := result.Requirements[0].Checks[0]
+			if result.Requirements[0].Status != tt.status || check.Artifact != tt.artifact {
+				t.Errorf("status %q on %q, want %q on %q", result.Requirements[0].Status, check.Artifact, tt.status, tt.artifact)
+			}
+		})
+	}
+
+	t.Run("a stale artifact is not set aside", func(t *testing.T) {
+		withFreshness := compileProfile(t, perAccountMFA+`          freshness:
+            max_age_days: 30
+`)
+		old := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		stale := cloudPosture("artifacts/stale.json", map[string]any{"accounts": []any{iamAccount("1", map[string]any{"user_count": 1.0, "mfa_coverage_pct": 100.0})}})
+		stale.CollectedAt = &old
+		result := New().Validate(makeTestContext(), withFreshness, packOf(stale, none), "")
+		if got := result.Requirements[0].Checks[0].Status; got != "stale" {
+			t.Errorf("check status %q, want stale: the gate is decided only on fresh artifacts", got)
+		}
+	})
+}
+
+// settingsCapture applies when a cloud posture artifact shows a workforce
+// sign-in service in use.
+const settingsCapture = gateProfileHeader + `      any_of:
+        - type: evidencepack/settings-capture@v1
+          freshness:
+            max_age_days: 30
+          applicable_when:
+            type: evidencepack/cloud-posture@v1
+            all:
+              - path: $.workforce_sign_in.in_use
+                op: eq
+                value: true
+          metadata_conditions:
+            all:
+              - path: $.metadata.captured_on
+                op: max_age_days
+                value: 365
+`
+
+func TestValidate_ApplicableWhen_AnotherType(t *testing.T) {
+	profile := compileProfile(t, settingsCapture)
+	inUse := cloudPosture("artifacts/aws.json", map[string]any{"workforce_sign_in": map[string]any{"in_use": true}})
+	notInUse := cloudPosture("artifacts/aws-2.json", map[string]any{"workforce_sign_in": map[string]any{"in_use": false}})
+	unknown := cloudPosture("artifacts/aws-old.json", map[string]any{})
+	capture := artifactOf("artifacts/capture.json", "evidencepack/settings-capture@v1", map[string]any{"metadata": map[string]any{"captured_on": "2024-06-01"}})
+
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	oldInUse := inUse
+	oldInUse.CollectedAt = &old
+
+	tests := []struct {
+		name      string
+		artifacts []IndexedArtifact
+		status    string
+		message   string
+	}{
+		{"no artifact of the gate's type", []IndexedArtifact{capture}, "missing", "no artifact with schema evidencepack/cloud-posture@v1"},
+		{"one artifact, in use, capture on file", []IndexedArtifact{inUse, capture}, "pass", ""},
+		{"one artifact, in use, no capture", []IndexedArtifact{inUse}, "missing", "no artifact with schema evidencepack/settings-capture@v1"},
+		{"one artifact, not in use", []IndexedArtifact{notInUse}, "not_applicable", "applicable_when does not hold for any evidencepack/cloud-posture@v1 artifact"},
+		{"one artifact, unknown", []IndexedArtifact{unknown, capture}, "unknown", "insufficient evidence: $.workforce_sign_in.in_use absent from artifact"},
+		{"two artifacts, any true holds", []IndexedArtifact{notInUse, inUse}, "missing", "no artifact with schema evidencepack/settings-capture@v1"},
+		{"two artifacts, unknown over false", []IndexedArtifact{notInUse, unknown}, "unknown", "insufficient evidence: $.workforce_sign_in.in_use absent from artifact"},
+		{"two artifacts, both false", []IndexedArtifact{notInUse, notInUse}, "not_applicable", "applicable_when does not hold for any evidencepack/cloud-posture@v1 artifact"},
+		{"the clause's freshness does not apply to the gate", []IndexedArtifact{oldInUse, capture}, "pass", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := New().Validate(makeTestContext(), profile, packOf(tt.artifacts...), "")
+			check := result.Requirements[0].Checks[0]
+			if check.Status != tt.status || check.Message != tt.message {
+				t.Fatalf("check %q %q, want %q %q", check.Status, check.Message, tt.status, tt.message)
+			}
+			if check.ApplicableWhen == nil || check.ApplicableWhen.Type != "evidencepack/cloud-posture@v1" {
+				t.Errorf("applicable_when = %+v", check.ApplicableWhen)
+			}
+		})
+	}
+}
+
+func TestValidate_AnyOf_SetsAsideClausesThatDoNotApply(t *testing.T) {
+	profile := compileProfile(t, gateProfileHeader+`      any_of:
+        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.accounts[*].iam.access_key_user_count
+                op: eq
+                value: 0
+                cardinality: all
+        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.accounts[*].iam.access_key_user_count
+                op: gte
+                value: 1
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.access_key_rotation_compliant_pct
+                op: gte
+                value: 100
+                cardinality: all
+        - type: evidencepack/cloud-posture@v1
+          severity: low
+          applicable_when:
+            all:
+              - path: $.accounts[*].iam.access_key_user_count
+                op: gte
+                value: 1
+                cardinality: each
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.access_key_rotation_compliant_pct
+                op: gte
+                value: 90
+                cardinality: all
+`)
+	keys := func(count, pct float64) map[string]any {
+		return map[string]any{"access_key_user_count": count, "access_key_rotation_compliant_pct": pct}
+	}
+	run := func(accounts ...any) RequirementResult {
+		return New().Validate(makeTestContext(), profile, packOf(cloudPosture("artifacts/cloud.json", map[string]any{"accounts": accounts})), "").Requirements[0]
+	}
+
+	t.Run("a gate-only clause passes when it applies", func(t *testing.T) {
+		req := run(iamAccount("1", map[string]any{"access_key_user_count": 0.0}))
+		if req.Status != "pass" || !req.Checks[0].Selected || req.Checks[1].Status != "not_applicable" {
+			t.Errorf("status %q, checks %+v", req.Status, req.Checks)
+		}
+	})
+
+	t.Run("a graduated failure shows the first clause that applies", func(t *testing.T) {
+		req := run(iamAccount("1", keys(2, 95)))
+		if req.Status != "fail" || req.Severity != "low" {
+			t.Fatalf("status %q severity %q", req.Status, req.Severity)
+		}
+		if !req.Checks[1].Selected || req.Expected == nil || req.Expected.Value != 100 || req.Actual != 95.0 {
+			t.Errorf("selected %v, expected %+v, actual %v", req.Checks[1].Selected, req.Expected, req.Actual)
+		}
+	})
+
+	t.Run("the default failure never selects a clause that does not apply", func(t *testing.T) {
+		req := run(iamAccount("1", keys(2, 50)))
+		if req.Status != "fail" || req.Severity != "high" || req.Checks[0].Selected || !req.Checks[1].Selected {
+			t.Errorf("status %q severity %q checks %+v", req.Status, req.Severity, req.Checks)
+		}
+	})
+
+	t.Run("no clause applies", func(t *testing.T) {
+		profile := compileProfile(t, perAccountMFA)
+		result := New().Validate(makeTestContext(), profile, packOf(cloudPosture("artifacts/cloud.json", map[string]any{"accounts": []any{iamAccount("1", map[string]any{"user_count": 0.0})}})), "")
+		req := result.Requirements[0]
+		if req.Status != "not_applicable" || req.Severity != "" || req.Checks[0].Selected {
+			t.Errorf("requirement %+v", req)
+		}
+	})
+}
+
+func TestValidate_AllOf_FailedTestOutranksMissingType(t *testing.T) {
+	missing := `        - type: evidencepack/idp-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.user_security.mfa_coverage_pct
+                op: gte
+                value: 100
+`
+	failing := `        - type: evidencepack/cloud-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.mfa_coverage_pct
+                op: gte
+                value: 100
+                cardinality: all
+`
+	pack := packOf(cloudPosture("artifacts/cloud.json", map[string]any{"accounts": []any{iamAccount("1", map[string]any{"mfa_coverage_pct": 50.0})}}))
+
+	for name, clauses := range map[string]string{"missing first": missing + failing, "missing last": failing + missing} {
+		t.Run(name, func(t *testing.T) {
+			profile := compileProfile(t, gateProfileHeader+"      all_of:\n"+clauses)
+			req := New().Validate(makeTestContext(), profile, pack, "").Requirements[0]
+			if req.Status != "fail" || req.FailureKind != "condition" || req.Path != "$.accounts[*].iam.mfa_coverage_pct" {
+				t.Errorf("status %q failure_kind %q path %q, want the failed comparison to decide", req.Status, req.FailureKind, req.Path)
+			}
+		})
+	}
+
+	t.Run("a missing type alone fails as before", func(t *testing.T) {
+		profile := compileProfile(t, gateProfileHeader+"      all_of:\n"+missing+`        - type: evidencepack/cloud-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.accounts
+                op: exists
+`)
+		req := New().Validate(makeTestContext(), profile, pack, "").Requirements[0]
+		if req.Status != "fail" || req.Severity != "high" || req.FailureKind != "missing" {
+			t.Errorf("status %q severity %q failure_kind %q", req.Status, req.Severity, req.FailureKind)
+		}
+	})
+
+	t.Run("a missing type outranks unknown", func(t *testing.T) {
+		profile := compileProfile(t, gateProfileHeader+"      all_of:\n"+`        - type: evidencepack/cloud-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+`+missing)
+		req := New().Validate(makeTestContext(), profile, pack, "").Requirements[0]
+		if req.Status != "fail" || req.FailureKind != "missing" {
+			t.Errorf("status %q failure_kind %q", req.Status, req.FailureKind)
+		}
+	})
+}
+
+func TestValidate_AllOf_SetsAsideClausesThatDoNotApply(t *testing.T) {
+	gated := `        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.mfa_coverage_pct
+                op: gte
+                value: 100
+                cardinality: all
+`
+	unknown := `        - type: evidencepack/cloud-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.accounts[*].iam.root_mfa_enabled
+                op: eq
+                value: true
+                cardinality: all
+`
+	passing := `        - type: evidencepack/cloud-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.provider
+                op: eq
+                value: azure
+`
+	pack := packOf(cloudPosture("artifacts/cloud.json", map[string]any{"provider": "azure", "accounts": []any{iamAccount("1", map[string]any{"mfa_coverage_pct": 50.0})}}))
+
+	tests := []struct{ name, clauses, status string }{
+		{"with a pass", gated + passing, "pass"},
+		{"with an unknown", gated + unknown, "unknown"},
+		{"alone", gated, "not_applicable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := compileProfile(t, gateProfileHeader+"      all_of:\n"+tt.clauses)
+			req := New().Validate(makeTestContext(), profile, pack, "").Requirements[0]
+			if req.Status != tt.status || req.Checks[0].Status != "not_applicable" {
+				t.Errorf("status %q, first check %q", req.Status, req.Checks[0].Status)
+			}
+		})
+	}
+}
+
+func TestValidate_NotApplicableIsCountedAndNeverChangesTheStatus(t *testing.T) {
+	profile := compileProfile(t, perAccountMFA+`  - id: R2
+    name: R2
+    category: Access
+    satisfied_by:
+      any_of:
+        - type: evidencepack/cloud-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+  - id: R3
+    name: R3
+    category: Other
+    satisfied_by:
+      all_of:
+        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.provider
+                op: eq
+                value: azure
+`)
+	pack := packOf(cloudPosture("artifacts/cloud.json", map[string]any{"provider": "aws", "accounts": []any{iamAccount("1", map[string]any{"user_count": 0.0})}}))
+	result := New().Validate(makeTestContext(), profile, pack, "")
+
+	if result.Status != "pass" || len(result.KeyFailures) != 0 {
+		t.Errorf("status %q, key failures %v", result.Status, result.KeyFailures)
+	}
+	want := Summary{Total: 3, Passed: 1, NotApplicable: 2}
+	if result.Summary != want {
+		t.Errorf("Summary = %+v, want %+v", result.Summary, want)
+	}
+	if got := result.ByCategory["Access"]; got != (CategorySummary{Passed: 1, NotApplicable: 1}) {
+		t.Errorf("Access = %+v", got)
+	}
+	if got := result.ByCategory["Other"]; got != (CategorySummary{NotApplicable: 1}) {
+		t.Errorf("Other = %+v", got)
 	}
 }

@@ -81,7 +81,7 @@ Lint reports every problem it finds, not just the first. Findings print to stder
 | `TYPE_UNCHECKED` | warning | No schema is known for the clause's type, so its paths were not checked. Pass one under `schemas` |
 | `PATH_UNCHECKED` | warning | The path uses recursive descent, a filter or a union, which cannot be checked statically |
 
-Compiler errors such as `INVALID_OPERATOR` and `INVALID_CARDINALITY` are reported too, every one of them in a single run.
+Compiler errors such as `INVALID_OPERATOR`, `INVALID_CARDINALITY`, and `INVALID_GATE` are reported too, every one of them in a single run. Paths in `applicable_when` are checked against the schema of the type its conditions read, at locations such as `any_of[0].applicable_when.all[1]`.
 
 The tool bundles schemas for `evidencepack/idp-posture@v1`, `cloud-posture@v1`, `vcs-posture@v1`, `email-dns@v1` and `tls@v1`. Any other type needs a schema under `schemas` before its paths are checked.
 
@@ -130,7 +130,8 @@ The JSON Schema checks the grammar. Lint goes further: it checks each path again
 | `type` | string | Required. Artifact schema to match (e.g., `evidencepack/idp-posture@v1`) |
 | `severity` | string | Optional. Failure severity: `critical`, `high`, `medium`, `low` |
 | `freshness.max_age_days` | int | Optional. Maximum age of artifact in days |
-| `metadata_conditions.all` | []Condition | Optional. Conditions that must all be true |
+| `applicable_when` | object | Optional. When the clause applies. See [Applies When](#applies-when) |
+| `metadata_conditions.all` | []Condition | Optional. Conditions that must all be true. Required when `applicable_when` has a `cardinality: each` condition |
 
 ### Condition Options
 
@@ -139,7 +140,7 @@ The JSON Schema checks the grammar. Lint goes further: it checks each path again
 | `path` | string | JSONPath expression (e.g., `$.user_security.mfa_coverage_pct`) |
 | `op` | string | Operator: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `exists`, `not_exists`, `max_age_days` |
 | `value` | any | Expected value (not required for `exists`/`not_exists`) |
-| `cardinality` | string | For multi-value paths: `all`, `any`, `none` (empty = single value required) |
+| `cardinality` | string | For multi-value paths: `all`, `any`, `none` (empty = single value required). In `applicable_when` only, `each` |
 
 `max_age_days` expects `value` to be a non-negative number of days (validated at profile compile time) and the JSONPath value to be an ISO date (`YYYY-MM-DD`) or RFC3339 timestamp. It passes when the date is no older than the configured number of days and not in the future. Date-only values carry no timezone, so they are allowed up to one day in the future; RFC3339 timestamps must not be in the future at all.
 
@@ -200,9 +201,65 @@ metadata_conditions:
   cardinality: none
 ```
 
-**Partial presence detection**: For `cardinality: all`, the validator checks that ALL array elements have the field. If some elements are missing the field entirely, validation fails. For example, `$.accounts[*].iam.root_mfa_enabled` with `cardinality: all` will fail if 2 out of 3 accounts have `mfa_enabled: true` but the third account has no `mfa_enabled` field - the result will show "2 of 3 elements have field".
+**Partial presence detection**: For `cardinality: all`, the validator checks that ALL array elements have the field. If some elements are missing the field entirely, the condition is unknown rather than passing. For example, `$.accounts[*].iam.root_mfa_enabled` with `op: eq`, `value: true`, and `cardinality: all` is unknown if 2 out of 3 accounts have `root_mfa_enabled: true` but the third account has no `root_mfa_enabled` field. The result shows "2 of 3 elements evaluated". With `op: exists`, the same accounts fail the condition, and the result shows "2 of 3 elements have field".
 
 **Note**: Partial presence detection requires a simple wildcard path (e.g., `$.accounts[*].field`). Recursive descent paths (`$..field`) cannot detect partial presence since there's no single base array to count.
+
+### Applies When
+
+`applicable_when` on a clause says when the clause applies. [Applies When](overview.md#applies-when) in the overview explains how it evaluates.
+
+```yaml
+- type: evidencepack/cloud-posture@v1
+  applicable_when:
+    type: evidencepack/cloud-posture@v1   # optional, defaults to the clause's type
+    all:
+      - path: $.accounts[*].iam.user_count
+        op: gte
+        value: 1
+        cardinality: each
+  metadata_conditions:
+    all:
+      - path: $.accounts[*].iam.mfa_coverage_pct
+        op: gte
+        value: 100
+        cardinality: all
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Optional. Artifact type the conditions read. Defaults to the clause's own type |
+| `all` | []Condition | Required. Conditions that must all hold for the clause to apply |
+
+Rules:
+
+- `applicable_when` needs at least one condition.
+- `cardinality: each` is allowed only in `applicable_when`, only on a path with exactly one `[*]` and no other multi-value syntax, and only when the conditions read the clause's own type.
+- Every `each` condition in a clause ranges over the same list, the path before its `[*]`. Every condition in that clause's `metadata_conditions` with a `[*]` must read that list too, with one `[*]`.
+- A clause with an `each` condition needs `metadata_conditions`. Without them the clause passes whenever it applies, so it would pass as soon as one element qualified and say nothing about the rest.
+- Otherwise `metadata_conditions` is optional. A clause with `applicable_when` and no `metadata_conditions` passes whenever it applies.
+
+A profile that breaks one of these rules fails to compile with `INVALID_GATE`, except for `each` outside `applicable_when`, which fails with `INVALID_CARDINALITY`.
+
+A check reports `status: "not_applicable"` when `applicable_when` set aside every artifact the clause could read, and a requirement reports it when every one of its checks does. Each check for a clause with `applicable_when` also reports how it was decided, on the artifact that decided the check:
+
+```json
+"applicable_when": {
+  "type": "evidencepack/cloud-posture@v1",
+  "conditions": [
+    {
+      "path": "$.accounts[*].iam.user_count",
+      "expected": {"op": "gte", "value": 1},
+      "actual": "1 of 3 elements match",
+      "passed": true
+    }
+  ],
+  "skipped": 2,
+  "evaluated": 1
+}
+```
+
+`conditions` lists every condition in profile order, in the same shape as the check's own `conditions`. For an `each` condition, `actual` counts the elements it held for, and `passed` is true when it held for at least one. `skipped` and `evaluated` count the list's elements and appear only when `applicable_when` has an `each` condition. When the check's artifact was never evaluated, `applicable_when` carries only `type`.
 
 ### Manual Requirements
 
@@ -224,7 +281,7 @@ Rules:
 
 - A requirement must have exactly one of `any_of`, `all_of`, or `manual: true`.
 - A manual requirement must carry `id` or `control`; without either it could never receive asserted support.
-- Manual requirements are never scored. They report `status: "manual"`, count under `summary.manual`, and never affect the overall status. `summary.total` minus `summary.manual` is the machine-checked denominator.
+- Manual requirements are never scored. They report `status: "manual"`, count under `summary.manual`, and never affect the overall status. Requirements no clause applies to are handled the same way under `summary.not_applicable`, so `summary.total` minus `summary.manual` and `summary.not_applicable` is the machine-checked denominator.
 - A manual requirement with no asserted support entries produces a `MANUAL_UNSUPPORTED` warning.
 
 ## Overlay File Format
@@ -406,4 +463,4 @@ Mapping issues surface as warnings, in the `warnings` array of `validation.json`
 | 0 | Validation completed (check `validation.json` for pass/fail) |
 | 1 | Operational error (profile not found, invalid YAML, etc.) |
 
-Note: A failing validation (requirements not met) still exits with code 0. Check the `status` field in `validation.json`: `pass`, `fail`, or `unknown` (evidence absent for at least one requirement, none failing).
+Note: A failing validation (requirements not met) still exits with code 0. Check the `status` field in `validation.json`: `pass`, `fail`, or `unknown` (evidence absent for at least one requirement, none failing). Manual and not applicable requirements never change it.

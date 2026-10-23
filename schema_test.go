@@ -94,6 +94,7 @@ func TestProfileSchema_FieldsMatchTheGrammar(t *testing.T) {
 		{"satisfied_by", def(t, schema, "satisfied_by"), raw.RawSatisfiedBy{}},
 		{"clause", def(t, schema, "clause"), raw.RawClause{}},
 		{"freshness", freshness, raw.RawFreshness{}},
+		{"applicable_when", def(t, schema, "gate"), raw.RawGate{}},
 		{"metadata_conditions", conditions, raw.RawConditions{}},
 		{"condition", def(t, schema, "condition"), raw.RawCondition{}},
 	}
@@ -132,13 +133,33 @@ func TestProfileSchema_EnumsMatchTheCompiler(t *testing.T) {
 		}
 	}
 
-	var cardinalities []string
-	for name := range compiled.ValidCardinalities {
+	var cardinalities, outsideGates []string
+	for name, cardinality := range compiled.ValidCardinalities {
 		cardinalities = append(cardinalities, name)
+		if cardinality != compiled.CardinalityEach {
+			outsideGates = append(outsideGates, name)
+		}
 	}
 	sort.Strings(cardinalities)
+	sort.Strings(outsideGates)
 	if got := enumStrings(t, cond, "cardinality"); !slices.Equal(got, cardinalities) {
 		t.Errorf("schema cardinalities %v, compiler %v", got, cardinalities)
+	}
+
+	// Gate conditions take every cardinality; metadata conditions narrow
+	// the list to the ones the compiler accepts outside gates.
+	gateItems := def(t, schema, "gate")["properties"].(map[string]any)["all"].(map[string]any)["items"].(map[string]any)
+	if ref := gateItems["$ref"]; ref != "#/$defs/condition" {
+		t.Errorf("gate conditions are %v, want the shared condition", gateItems)
+	}
+	conditions := def(t, schema, "clause")["properties"].(map[string]any)["metadata_conditions"].(map[string]any)
+	items := conditions["properties"].(map[string]any)["all"].(map[string]any)["items"].(map[string]any)
+	parts := items["allOf"].([]any)
+	if ref := parts[0].(map[string]any)["$ref"]; ref != "#/$defs/condition" {
+		t.Errorf("metadata conditions start from %v, want the shared condition", ref)
+	}
+	if got := enumStrings(t, parts[1].(map[string]any), "cardinality"); !slices.Equal(got, outsideGates) {
+		t.Errorf("metadata condition cardinalities %v, compiler %v", got, outsideGates)
 	}
 
 	var severities []string

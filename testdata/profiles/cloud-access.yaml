@@ -1,0 +1,127 @@
+# Grades MFA and access key rotation with applicable_when. Used by the
+# validator's truth table tests and lint tests.
+#
+# MFA is all_of: the IdP test, then "no IAM users" (applies only when every
+# AWS account reports no IAM users and no SAML provider, and no workforce
+# sign-in service such as IAM Identity Center is in use), "IAM user MFA"
+# (checked in each account that has IAM users), and the settings capture
+# (applies when the AWS evidence shows a workforce sign-in service in use
+# whose users don't have MFA set at an external IdP).
+#
+# Key rotation is any_of: "no access keys" (applies when every AWS account
+# reports none), then rotation at 100% and, at low severity, 90%, both
+# checked in each account that has access keys.
+id: cloud-access
+name: Cloud Access
+version: "1.0.0"
+requirements:
+- id: MFA
+  name: Every staff account has multifactor sign-in enrolled
+  category: Access
+  satisfied_by:
+    all_of:
+    - type: evidencepack/idp-posture@v1
+      metadata_conditions:
+        all:
+        - path: "$.user_security.mfa_coverage_pct"
+          op: gte
+          value: 100
+    - type: evidencepack/cloud-posture@v1
+      applicable_when:
+        all:
+        - path: "$.provider"
+          op: eq
+          value: aws
+        - path: "$.accounts[*].iam.user_count"
+          op: exists
+          cardinality: all
+        - path: "$.accounts[*].iam.user_count"
+          op: eq
+          value: 0
+          cardinality: all
+        - path: "$.accounts[*].iam.saml_provider_count"
+          op: exists
+          cardinality: all
+        - path: "$.accounts[*].iam.saml_provider_count"
+          op: eq
+          value: 0
+          cardinality: all
+        - path: "$.workforce_sign_in.in_use"
+          op: eq
+          value: false
+    - type: evidencepack/cloud-posture@v1
+      applicable_when:
+        all:
+        - path: "$.accounts[*].iam.user_count"
+          op: gte
+          value: 1
+          cardinality: each
+      metadata_conditions:
+        all:
+        - path: "$.accounts[*].iam.mfa_coverage_pct"
+          op: gte
+          value: 100
+          cardinality: all
+    - type: evidencepack/identity-center-mfa-settings@v1
+      applicable_when:
+        type: evidencepack/cloud-posture@v1
+        all:
+        - path: "$.provider"
+          op: eq
+          value: aws
+        - path: "$.workforce_sign_in.in_use"
+          op: eq
+          value: true
+        - path: "$.workforce_sign_in.mfa_source"
+          op: neq
+          value: external_idp
+      metadata_conditions:
+        all:
+        - path: "$.metadata.captured_on"
+          op: max_age_days
+          value: 365
+- id: KEY-ROTATION
+  name: Long-lived access keys are rotated
+  category: Access
+  satisfied_by:
+    any_of:
+    - type: evidencepack/cloud-posture@v1
+      applicable_when:
+        all:
+        - path: "$.provider"
+          op: eq
+          value: aws
+        - path: "$.accounts[*].iam.access_key_user_count"
+          op: exists
+          cardinality: all
+        - path: "$.accounts[*].iam.access_key_user_count"
+          op: eq
+          value: 0
+          cardinality: all
+    - type: evidencepack/cloud-posture@v1
+      applicable_when:
+        all:
+        - path: "$.accounts[*].iam.access_key_user_count"
+          op: gte
+          value: 1
+          cardinality: each
+      metadata_conditions:
+        all:
+        - path: "$.accounts[*].iam.access_key_rotation_compliant_pct"
+          op: gte
+          value: 100
+          cardinality: all
+    - type: evidencepack/cloud-posture@v1
+      severity: low
+      applicable_when:
+        all:
+        - path: "$.accounts[*].iam.access_key_user_count"
+          op: gte
+          value: 1
+          cardinality: each
+      metadata_conditions:
+        all:
+        - path: "$.accounts[*].iam.access_key_rotation_compliant_pct"
+          op: gte
+          value: 90
+          cardinality: all

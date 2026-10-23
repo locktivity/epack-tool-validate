@@ -103,6 +103,39 @@ func ExtractBasePath(expr jp.Expr) jp.Expr {
 	return basePath
 }
 
+// SplitAtWildcard splits a path with exactly one [*] into the list it ranges
+// over and the path below it, relative to one element of that list:
+// $.accounts[*].iam.user_count splits into $.accounts and $.iam.user_count.
+// Paths with no [*], more than one, or any other multi-value syntax do not
+// split.
+func SplitAtWildcard(expr jp.Expr) (list, element jp.Expr, ok bool) {
+	if len(expr) == 0 {
+		return nil, nil, false
+	}
+	if _, isRoot := expr[0].(jp.Root); !isRoot {
+		return nil, nil, false
+	}
+	wildcard := -1
+	for i, frag := range expr[1:] {
+		switch frag.(type) {
+		case jp.Child, jp.Nth:
+		case jp.Wildcard:
+			if wildcard >= 0 {
+				return nil, nil, false
+			}
+			wildcard = i + 1
+		default:
+			return nil, nil, false
+		}
+	}
+	if wildcard < 0 {
+		return nil, nil, false
+	}
+	list = append(jp.Expr{}, expr[:wildcard]...)
+	element = append(jp.R(), expr[wildcard+1:]...)
+	return list, element, true
+}
+
 // GetArrayLength evaluates a base path and returns the length of the array at that path.
 // Returns -1 if the path doesn't exist or doesn't point to an array.
 func GetArrayLength(basePath jp.Expr, value any) int {
