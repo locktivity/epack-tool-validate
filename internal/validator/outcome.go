@@ -66,4 +66,5 @@ type ClauseOutcome struct {
 	ConditionChecks   []ConditionCheck
 
 	ApplicableWhen *ApplicableWhen // How the clause's gate was decided, when it has one and it was evaluated
+	Artifacts      *ArtifactTally  // How the clause went across its artifacts, when its artifacts key is all
 }

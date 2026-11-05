@@ -26,6 +26,32 @@ func (m ClauseMode) String() string {
 	}
 }
 
+// ArtifactMode says how many artifacts of a clause's type must satisfy it.
+type ArtifactMode int
+
+const (
+	ArtifactModeAny ArtifactMode = iota // One artifact satisfying the clause is enough
+	ArtifactModeAll                     // Every artifact the clause reads must satisfy it
+)
+
+func (m ArtifactMode) String() string {
+	switch m {
+	case ArtifactModeAny:
+		return "any"
+	case ArtifactModeAll:
+		return "all"
+	default:
+		return "unknown"
+	}
+}
+
+// ValidArtifactModes are the allowed values of a clause's artifacts key. An
+// absent key is any.
+var ValidArtifactModes = map[string]ArtifactMode{
+	"any": ArtifactModeAny,
+	"all": ArtifactModeAll,
+}
+
 // CompiledProfile is the immutable, execution-ready form of a profile.
 type CompiledProfile struct {
 	ID           string
@@ -52,6 +78,7 @@ type CompiledRequirement struct {
 type CompiledClause struct {
 	Schema     string              // Artifact schema to match (e.g., "evidencepack/idp-posture@v1")
 	Severity   string              // "critical" | "high" | "medium" | "low" OR empty = pass
+	Artifacts  ArtifactMode        // Whether one artifact of Schema or every one must satisfy the clause
 	MaxAgeDays *int                // nil = no freshness check
 	Gate       *CompiledGate       // nil = the clause applies to every artifact
 	Conditions []CompiledCondition // Pre-validated conditions

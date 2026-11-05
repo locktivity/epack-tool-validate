@@ -190,9 +190,20 @@ func compileClause(clause *raw.RawClause, reqID string, idx int, sourceFile stri
 		)}
 	}
 
+	// Validate artifacts
+	artifacts, ok := ValidArtifactModes[clause.Artifacts]
+	if !ok && clause.Artifacts != "" {
+		return nil, []diagnostic.Diagnostic{diagnostic.Errorf(
+			diagnostic.CodeInvalidArtifacts, loc,
+			"requirement %s, clause %d: invalid artifacts %q (must be any, all, or empty)",
+			reqID, idx, clause.Artifacts,
+		)}
+	}
+
 	compiled := &CompiledClause{
-		Schema:   clause.Type,
-		Severity: clause.Severity,
+		Schema:    clause.Type,
+		Severity:  clause.Severity,
+		Artifacts: artifacts,
 		Origin: Origin{
 			RequirementID: reqID,
 			ClauseIndex:   idx,

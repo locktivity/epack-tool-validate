@@ -129,6 +129,7 @@ func TestDiagnosticCodes(t *testing.T) {
 		CodeEmptyClauses,
 		CodeMissingType,
 		CodeInvalidSeverity,
+		CodeInvalidArtifacts,
 		CodeInvalidOperator,
 		CodeInvalidJSONPath,
 		CodeInvalidGate,

@@ -31,11 +31,14 @@ func TestBundled_HoldsEveryNormalizedType(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
+		"evidencepack/access-posture@v1",
 		"evidencepack/cloud-posture@v1",
 		"evidencepack/email-dns@v1",
+		"evidencepack/endpoint-posture@v1",
 		"evidencepack/idp-posture@v1",
 		"evidencepack/tls@v1",
 		"evidencepack/vcs-posture@v1",
+		"evidencepack/vuln-scanning@v1",
 	}
 	if got := reg.Types(); !slices.Equal(got, want) {
 		t.Errorf("Types() = %v, want %v", got, want)
@@ -53,7 +56,7 @@ func TestResolve_DeclaredLeaf(t *testing.T) {
 }
 
 func TestResolve_WildcardIntoArrayItems(t *testing.T) {
-	node, err := resolve(t, "evidencepack/cloud-posture@v1", "$.accounts[*].iam.root_access_protected")
+	node, err := resolve(t, "evidencepack/cloud-posture@v1", "$.accounts[*].logging.cloudtrail_enabled")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -136,7 +139,7 @@ func TestResolve_UndeclaredFieldsUnderAnOpenObject(t *testing.T) {
 func TestPaths_ListsNestedAndArrayPaths(t *testing.T) {
 	reg, _ := Bundled()
 	paths := reg.Lookup("evidencepack/cloud-posture@v1").Paths()
-	if !slices.Contains(paths, "$.accounts[*].iam.root_access_protected") {
-		t.Errorf("Paths missing the per-account IAM field: %v", paths)
+	if !slices.Contains(paths, "$.accounts[*].logging.cloudtrail_enabled") {
+		t.Errorf("Paths missing the per-account logging field: %v", paths)
 	}
 }

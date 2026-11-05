@@ -70,6 +70,7 @@ Lint reports every problem it finds, not just the first. Findings print to stder
 | Code | Severity | Meaning |
 |------|----------|---------|
 | `UNKNOWN_PATH` | error | The path names a field the artifact's schema does not declare. Includes the declared fields at that level and the closest declared paths |
+| `MOVED_PATH` | warning | The path reads a field that epack v0.10.0 moved to another type, such as cloud-posture's `iam`, which moved to access-posture. Names the new field. A profile keeps the old condition beside the new one while collectors upgrade |
 | `PATH_SHAPE` | error | The path indexes something that is not an array, or reads a field of something that is not an object |
 | `OPERATOR_TYPE_MISMATCH` | error | A numeric operator on a non-numeric field, or `max_age_days` on a field that is not a date string |
 | `NEVER_MATCHES` | error | `eq` against a value the field can never hold: the wrong type, a value outside its allowed values, or a whole object. Also a numeric operator given a non-numeric value |
@@ -129,6 +130,7 @@ The JSON Schema checks the grammar. Lint goes further: it checks each path again
 |-------|------|-------------|
 | `type` | string | Required. Artifact schema to match (e.g., `evidencepack/idp-posture@v1`) |
 | `severity` | string | Optional. Failure severity: `critical`, `high`, `medium`, `low` |
+| `artifacts` | string | Optional. `any` (the default) or `all`. Whether one artifact of the type or every one must satisfy the clause. See [Every Artifact of a Type](#every-artifact-of-a-type) |
 | `freshness.max_age_days` | int | Optional. Maximum age of artifact in days |
 | `applicable_when` | object | Optional. When the clause applies. See [Applies When](#applies-when) |
 | `metadata_conditions.all` | []Condition | Optional. Conditions that must all be true. Required when `applicable_when` has a `cardinality: each` condition |
@@ -166,10 +168,10 @@ When a JSONPath expression can return multiple values, you must specify how to e
 ```yaml
 metadata_conditions:
   all:
-    - path: $.accounts[*].iam.root_mfa_enabled
+    - path: $.accounts[*].logging.audit_log_enabled
       op: eq
       value: true
-      cardinality: all  # ALL accounts must have MFA enabled
+      cardinality: all  # ALL accounts must have audit logging on
 ```
 
 | Cardinality | Description |
@@ -182,8 +184,8 @@ metadata_conditions:
 **Examples**:
 
 ```yaml
-# All accounts must have MFA enabled
-- path: $.accounts[*].iam.root_mfa_enabled
+# All accounts must have audit logging on
+- path: $.accounts[*].logging.audit_log_enabled
   op: eq
   value: true
   cardinality: all
@@ -201,9 +203,46 @@ metadata_conditions:
   cardinality: none
 ```
 
-**Partial presence detection**: For `cardinality: all`, the validator checks that ALL array elements have the field. If some elements are missing the field entirely, the condition is unknown rather than passing. For example, `$.accounts[*].iam.root_mfa_enabled` with `op: eq`, `value: true`, and `cardinality: all` is unknown if 2 out of 3 accounts have `root_mfa_enabled: true` but the third account has no `root_mfa_enabled` field. The result shows "2 of 3 elements evaluated". With `op: exists`, the same accounts fail the condition, and the result shows "2 of 3 elements have field".
+**Partial presence detection**: For `cardinality: all`, the validator checks that ALL array elements have the field. If some elements are missing the field entirely, the condition is unknown rather than passing. For example, `$.accounts[*].logging.audit_log_enabled` with `op: eq`, `value: true`, and `cardinality: all` is unknown if 2 out of 3 accounts have `audit_log_enabled: true` but the third account has no `audit_log_enabled` field. The result shows "2 of 3 elements evaluated". With `op: exists`, the same accounts fail the condition, and the result shows "2 of 3 elements have field".
 
 **Note**: Partial presence detection requires a simple wildcard path (e.g., `$.accounts[*].field`). Recursive descent paths (`$..field`) cannot detect partial presence since there's no single base array to count.
+
+### Every Artifact of a Type
+
+A pack can hold several artifacts of one type, such as an `idp-posture` file from Okta and another from Google Workspace, or one `access-posture` file for each system. By default a clause is satisfied when one of them satisfies it. Set `artifacts: all` to require every one:
+
+```yaml
+- type: evidencepack/access-posture@v1
+  artifacts: all  # every system must require SSO
+  metadata_conditions:
+    all:
+      - path: $.sign_in.sso_required
+        op: eq
+        value: true
+```
+
+| Artifacts | Description |
+|-----------|-------------|
+| `any` | Default. One artifact satisfying the clause is enough |
+| `all` | Every artifact the clause reads must satisfy it |
+
+With `all`, an artifact whose conditions do not hold fails the clause, even when another artifact lacks a value the clause reads. Without such a failure, a missing value makes the clause unknown. A stale artifact comes next, then one with no timestamp when the clause sets `freshness`. Artifacts that `applicable_when` sets aside are not read, and the clause does not apply when it sets aside every one. A pack with no artifact of the type makes the clause `missing`, as it does with `any`. Any other value fails to compile with `INVALID_ARTIFACTS`.
+
+Each check for a clause with `artifacts: all` reports how it went across the artifacts:
+
+```json
+"artifacts": {
+  "mode": "all",
+  "evaluated": 7,
+  "passed": 5,
+  "failed": [
+    "artifacts/clickhouse.access-posture.json",
+    "artifacts/modal.access-posture.json"
+  ]
+}
+```
+
+`evaluated` counts the artifacts whose conditions were checked, and `passed` the ones that satisfied them. `failed` lists the ones whose conditions did not hold. `skipped` counts the ones `applicable_when` set aside and appears only when there are any. A stale artifact, or one with no timestamp, is in none of these. When more than one artifact satisfied the clause, a passing check has no `artifact`.
 
 ### Applies When
 
@@ -214,13 +253,13 @@ metadata_conditions:
   applicable_when:
     type: evidencepack/cloud-posture@v1   # optional, defaults to the clause's type
     all:
-      - path: $.accounts[*].iam.user_count
-        op: gte
-        value: 1
+      - path: $.accounts[*].storage.storage_resources_present
+        op: eq
+        value: true
         cardinality: each
   metadata_conditions:
     all:
-      - path: $.accounts[*].iam.mfa_coverage_pct
+      - path: $.accounts[*].storage.encryption_pct
         op: gte
         value: 100
         cardinality: all
@@ -248,8 +287,8 @@ A check reports `status: "not_applicable"` when `applicable_when` set aside ever
   "type": "evidencepack/cloud-posture@v1",
   "conditions": [
     {
-      "path": "$.accounts[*].iam.user_count",
-      "expected": {"op": "gte", "value": 1},
+      "path": "$.accounts[*].storage.storage_resources_present",
+      "expected": {"op": "eq", "value": true},
       "actual": "1 of 3 elements match",
       "passed": true
     }

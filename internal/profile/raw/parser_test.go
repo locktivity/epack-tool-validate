@@ -374,3 +374,29 @@ requirements:
 		}
 	})
 }
+
+func TestParseProfileFromBytes_Artifacts(t *testing.T) {
+	profile, err := ParseProfileFromBytes([]byte(`
+id: test-profile
+name: Test Profile
+version: "1.0.0"
+requirements:
+  - id: REQ-001
+    name: Test Requirement
+    satisfied_by:
+      any_of:
+        - type: evidencepack/access-posture@v1
+          artifacts: all
+          metadata_conditions:
+            all:
+              - path: $.sign_in.sso_required
+                op: eq
+                value: true
+`))
+	if err != nil {
+		t.Fatalf("ParseProfileFromBytes() error: %v", err)
+	}
+	if got := profile.Requirements[0].SatisfiedBy.AnyOf[0].Artifacts; got != "all" {
+		t.Errorf("Artifacts = %q, want all", got)
+	}
+}

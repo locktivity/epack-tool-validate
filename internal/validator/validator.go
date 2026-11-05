@@ -358,6 +358,7 @@ func buildCheckResults(req *compiled.CompiledRequirement, outcomes []ClauseOutco
 			Artifact:       outcome.ArtifactPath,
 			Message:        outcome.FailureDetail,
 			ApplicableWhen: outcome.ApplicableWhen,
+			Artifacts:      outcome.Artifacts,
 			Conditions:     outcome.ConditionChecks,
 		}
 		// A gate that was never evaluated (no fresh artifact to evaluate it
@@ -458,7 +459,8 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 
 // evaluateArtifacts evaluates a clause against the artifacts of its own type.
 // A gate here reads those same artifacts; artifacts it sets aside take no
-// part in the result unless every artifact was set aside.
+// part in the result unless every artifact was set aside. With artifacts:
+// all, every artifact the clause reads must satisfy it.
 func (v *Validator) evaluateArtifacts(ctx *Context, clause *compiled.CompiledClause, gate *compiled.CompiledGate, artifacts []IndexedArtifact) ClauseOutcome {
 	if len(artifacts) == 0 {
 		return ClauseOutcome{
@@ -467,6 +469,9 @@ func (v *Validator) evaluateArtifacts(ctx *Context, clause *compiled.CompiledCla
 			FailureDetail: fmt.Sprintf("no artifact with schema %s", clause.Schema),
 			Origin:        clause.Origin,
 		}
+	}
+	if clause.Artifacts == compiled.ArtifactModeAll {
+		return v.evaluateEveryArtifact(ctx, clause, gate, artifacts)
 	}
 
 	// Track what we've seen for accurate failure reporting
@@ -477,105 +482,28 @@ func (v *Validator) evaluateArtifacts(ctx *Context, clause *compiled.CompiledCla
 	var missingTimestamp bool                // Any artifact missing timestamp
 
 	for _, artifact := range artifacts {
-		artifact := artifact // capture for pointer
-
-		// Check freshness if required
-		if clause.MaxAgeDays != nil {
-			if artifact.CollectedAt == nil {
-				missingTimestamp = true
-				continue // Skip artifacts without timestamp
+		judged := evaluateArtifact(ctx, clause, gate, artifact)
+		switch judged.kind {
+		case artifactUndated:
+			missingTimestamp = true
+		case artifactStale:
+			if staleArtifact == nil {
+				staleArtifact = &artifact
 			}
-			age := ctx.Now().Sub(*artifact.CollectedAt)
-			maxAge := time.Duration(*clause.MaxAgeDays) * 24 * time.Hour
-			if age > maxAge {
-				if staleArtifact == nil {
-					staleArtifact = &artifact
-				}
-				continue // Too old, try next artifact
+		case artifactSetAside:
+			if notApplicable == nil {
+				notApplicable = &judged.outcome
 			}
-		}
-
-		var admitted []any
-		var gateReport *ApplicableWhen
-		if gate != nil {
-			decision := decideGate(gate, artifact.Body, ctx.Now())
-			switch decision.Verdict {
-			case VerdictFalse:
-				if notApplicable == nil {
-					outcome := notApplicableOutcome(clause, artifact.Path, decision)
-					notApplicable = &outcome
-				}
-				continue
-			case VerdictUnknown:
-				if insufficientEvidence == nil {
-					outcome := gateUnknownOutcome(clause, artifact.Path, decision)
-					insufficientEvidence = &outcome
-				}
-				continue
-			}
-			admitted = decision.Admitted
-			gateReport = decision.Report
-		}
-
-		// Artifact is fresh (or no freshness requirement) - evaluate conditions
-		condResult := evaluateConditionsOn(clause.Conditions, artifact.Body, admitted, ctx.Now())
-		switch condResult.Verdict {
-		case VerdictTrue:
-			outcome := ClauseOutcome{
-				Matched:         true,
-				Severity:        clause.Severity,
-				ArtifactPath:    artifact.Path,
-				Origin:          clause.Origin,
-				ConditionChecks: condResult.Checks,
-				ApplicableWhen:  gateReport,
-			}
-			if condResult.Detail != nil {
-				outcome.ConditionPath = condResult.Detail.Path
-				outcome.ConditionExpected = condResult.Detail.Expected
-				outcome.ConditionActual = condResult.Detail.Actual
-				outcome.ConditionDelta = condResult.Detail.Delta
-			}
-			return outcome
-
-		case VerdictUnknown:
+		case artifactUnknown:
 			if insufficientEvidence == nil {
-				insufficientEvidence = &ClauseOutcome{
-					Unknown:         true,
-					FailureKind:     FailureKindInsufficientEvidence,
-					FailureDetail:   "insufficient evidence: referenced value absent from artifact",
-					ArtifactPath:    artifact.Path,
-					Origin:          clause.Origin,
-					ConditionChecks: condResult.Checks,
-					ApplicableWhen:  gateReport,
-				}
-				if condResult.Detail != nil {
-					insufficientEvidence.FailureDetail = fmt.Sprintf("insufficient evidence: %s absent from artifact", condResult.Detail.Path)
-					insufficientEvidence.ConditionPath = condResult.Detail.Path
-					insufficientEvidence.ConditionExpected = condResult.Detail.Expected
-					insufficientEvidence.ConditionActual = condResult.Detail.Actual
-					insufficientEvidence.ConditionDelta = condResult.Detail.Delta
-				}
+				insufficientEvidence = &judged.outcome
 			}
-
-		default:
-			// Fresh artifact failed conditions - track for reporting
+		case artifactFailed:
 			if freshConditionFailure == nil {
-				freshConditionFailure = &ClauseOutcome{
-					Matched:         false,
-					FailureKind:     FailureKindCondition,
-					FailureDetail:   "conditions not satisfied",
-					ArtifactPath:    artifact.Path,
-					Origin:          clause.Origin,
-					ConditionChecks: condResult.Checks,
-					ApplicableWhen:  gateReport,
-				}
-				if condResult.Detail != nil {
-					freshConditionFailure.ConditionPath = condResult.Detail.Path
-					freshConditionFailure.ConditionExpected = condResult.Detail.Expected
-					freshConditionFailure.ConditionActual = condResult.Detail.Actual
-					freshConditionFailure.ConditionDelta = condResult.Detail.Delta
-				}
+				freshConditionFailure = &judged.outcome
 			}
+		case artifactPassed:
+			return judged.outcome
 		}
 	}
 
@@ -594,23 +522,11 @@ func (v *Validator) evaluateArtifacts(ctx *Context, clause *compiled.CompiledCla
 
 	// No fresh artifacts - report freshness issue
 	if staleArtifact != nil {
-		age := ctx.Now().Sub(*staleArtifact.CollectedAt)
-		return ClauseOutcome{
-			Matched:       false,
-			FailureKind:   FailureKindFreshness,
-			FailureDetail: fmt.Sprintf("artifact too old: collected %s ago, max %d days", age.Round(time.Hour), *clause.MaxAgeDays),
-			ArtifactPath:  staleArtifact.Path,
-			Origin:        clause.Origin,
-		}
+		return staleOutcome(ctx, clause, *staleArtifact)
 	}
 
 	if missingTimestamp {
-		return ClauseOutcome{
-			Matched:       false,
-			FailureKind:   FailureKindFreshnessMissing,
-			FailureDetail: "artifact missing collected_at timestamp",
-			Origin:        clause.Origin,
-		}
+		return undatedOutcome(clause)
 	}
 
 	// Every artifact was set aside.
@@ -623,6 +539,194 @@ func (v *Validator) evaluateArtifacts(ctx *Context, clause *compiled.CompiledCla
 		Matched:       false,
 		FailureKind:   FailureKindCondition,
 		FailureDetail: "conditions not satisfied",
+		Origin:        clause.Origin,
+	}
+}
+
+// evaluateEveryArtifact evaluates a clause whose artifacts key is all. Every
+// artifact the clause reads must satisfy it, so one definite failure decides
+// the clause even when another artifact's evidence is absent, as all_of does
+// across clauses. Absent evidence comes next, then a stale or undated
+// artifact. Artifacts the gate sets aside take no part, and the clause does
+// not apply when the gate sets aside every one. The outcome carries a tally
+// across the artifacts.
+func (v *Validator) evaluateEveryArtifact(ctx *Context, clause *compiled.CompiledClause, gate *compiled.CompiledGate, artifacts []IndexedArtifact) ClauseOutcome {
+	tally := &ArtifactTally{Mode: compiled.ArtifactModeAll.String()}
+	var failed, unknown, notApplicable, passed *ClauseOutcome
+	var stale *IndexedArtifact
+	var undated bool
+
+	for _, artifact := range artifacts {
+		judged := evaluateArtifact(ctx, clause, gate, artifact)
+		switch judged.kind {
+		case artifactUndated:
+			undated = true
+		case artifactStale:
+			if stale == nil {
+				stale = &artifact
+			}
+		case artifactSetAside:
+			tally.Skipped++
+			if notApplicable == nil {
+				notApplicable = &judged.outcome
+			}
+		case artifactUnknown:
+			tally.Evaluated++
+			if unknown == nil {
+				unknown = &judged.outcome
+			}
+		case artifactFailed:
+			tally.Evaluated++
+			tally.Failed = append(tally.Failed, artifact.Path)
+			if failed == nil {
+				failed = &judged.outcome
+			}
+		case artifactPassed:
+			tally.Evaluated++
+			tally.Passed++
+			if passed == nil {
+				passed = &judged.outcome
+			}
+		}
+	}
+
+	var outcome ClauseOutcome
+	switch {
+	case failed != nil:
+		outcome = *failed
+	case unknown != nil:
+		outcome = *unknown
+	case stale != nil:
+		outcome = staleOutcome(ctx, clause, *stale)
+	case undated:
+		outcome = undatedOutcome(clause)
+	case passed != nil:
+		outcome = *passed
+		// Several artifacts satisfied the clause, so no one artifact or
+		// value stands for the result.
+		if tally.Passed > 1 {
+			outcome.ArtifactPath = ""
+			outcome.ConditionActual = nil
+			outcome.ConditionDelta = nil
+			outcome.ConditionChecks = nil
+			outcome.ApplicableWhen = nil
+		}
+	case notApplicable != nil:
+		outcome = *notApplicable
+	default:
+		outcome = ClauseOutcome{
+			Matched:       false,
+			FailureKind:   FailureKindCondition,
+			FailureDetail: "conditions not satisfied",
+			Origin:        clause.Origin,
+		}
+	}
+	outcome.Artifacts = tally
+	return outcome
+}
+
+// artifactKind is how one artifact stood against a clause.
+type artifactKind int
+
+const (
+	artifactUndated  artifactKind = iota // The clause needs freshness and the artifact has no timestamp
+	artifactStale                        // Older than the clause's freshness allows
+	artifactSetAside                     // applicable_when set the artifact aside
+	artifactUnknown                      // A value the clause reads is absent
+	artifactFailed                       // The conditions did not hold
+	artifactPassed                       // The conditions held
+)
+
+// judgedArtifact is one artifact's standing against a clause. outcome is
+// set for every kind but artifactUndated and artifactStale.
+type judgedArtifact struct {
+	kind    artifactKind
+	outcome ClauseOutcome
+}
+
+// evaluateArtifact judges one artifact against a clause: its freshness, then
+// the gate, then the conditions.
+func evaluateArtifact(ctx *Context, clause *compiled.CompiledClause, gate *compiled.CompiledGate, artifact IndexedArtifact) judgedArtifact {
+	// Check freshness if required
+	if clause.MaxAgeDays != nil {
+		if artifact.CollectedAt == nil {
+			return judgedArtifact{kind: artifactUndated}
+		}
+		age := ctx.Now().Sub(*artifact.CollectedAt)
+		maxAge := time.Duration(*clause.MaxAgeDays) * 24 * time.Hour
+		if age > maxAge {
+			return judgedArtifact{kind: artifactStale}
+		}
+	}
+
+	var admitted []any
+	var gateReport *ApplicableWhen
+	if gate != nil {
+		decision := decideGate(gate, artifact.Body, ctx.Now())
+		switch decision.Verdict {
+		case VerdictFalse:
+			return judgedArtifact{kind: artifactSetAside, outcome: notApplicableOutcome(clause, artifact.Path, decision)}
+		case VerdictUnknown:
+			return judgedArtifact{kind: artifactUnknown, outcome: gateUnknownOutcome(clause, artifact.Path, decision)}
+		}
+		admitted = decision.Admitted
+		gateReport = decision.Report
+	}
+
+	// Artifact is fresh (or no freshness requirement) - evaluate conditions
+	condResult := evaluateConditionsOn(clause.Conditions, artifact.Body, admitted, ctx.Now())
+	outcome := ClauseOutcome{
+		ArtifactPath:    artifact.Path,
+		Origin:          clause.Origin,
+		ConditionChecks: condResult.Checks,
+		ApplicableWhen:  gateReport,
+	}
+	if condResult.Detail != nil {
+		outcome.ConditionPath = condResult.Detail.Path
+		outcome.ConditionExpected = condResult.Detail.Expected
+		outcome.ConditionActual = condResult.Detail.Actual
+		outcome.ConditionDelta = condResult.Detail.Delta
+	}
+	switch condResult.Verdict {
+	case VerdictTrue:
+		outcome.Matched = true
+		outcome.Severity = clause.Severity
+		return judgedArtifact{kind: artifactPassed, outcome: outcome}
+	case VerdictUnknown:
+		outcome.Unknown = true
+		outcome.FailureKind = FailureKindInsufficientEvidence
+		outcome.FailureDetail = "insufficient evidence: referenced value absent from artifact"
+		if condResult.Detail != nil {
+			outcome.FailureDetail = fmt.Sprintf("insufficient evidence: %s absent from artifact", condResult.Detail.Path)
+		}
+		return judgedArtifact{kind: artifactUnknown, outcome: outcome}
+	default:
+		// Fresh artifact failed conditions - track for reporting
+		outcome.FailureKind = FailureKindCondition
+		outcome.FailureDetail = "conditions not satisfied"
+		return judgedArtifact{kind: artifactFailed, outcome: outcome}
+	}
+}
+
+// staleOutcome is the outcome when the freshest the clause found was stale.
+func staleOutcome(ctx *Context, clause *compiled.CompiledClause, artifact IndexedArtifact) ClauseOutcome {
+	age := ctx.Now().Sub(*artifact.CollectedAt)
+	return ClauseOutcome{
+		Matched:       false,
+		FailureKind:   FailureKindFreshness,
+		FailureDetail: fmt.Sprintf("artifact too old: collected %s ago, max %d days", age.Round(time.Hour), *clause.MaxAgeDays),
+		ArtifactPath:  artifact.Path,
+		Origin:        clause.Origin,
+	}
+}
+
+// undatedOutcome is the outcome when the clause needs freshness and an
+// artifact has no timestamp.
+func undatedOutcome(clause *compiled.CompiledClause) ClauseOutcome {
+	return ClauseOutcome{
+		Matched:       false,
+		FailureKind:   FailureKindFreshnessMissing,
+		FailureDetail: "artifact missing collected_at timestamp",
 		Origin:        clause.Origin,
 	}
 }

@@ -88,7 +88,21 @@ type CheckResult struct {
 	Artifact       string           `json:"artifact,omitempty"`
 	Message        string           `json:"message,omitempty"`
 	ApplicableWhen *ApplicableWhen  `json:"applicable_when,omitempty"`
+	Artifacts      *ArtifactTally   `json:"artifacts,omitempty"`
 	Conditions     []ConditionCheck `json:"conditions,omitempty"`
+}
+
+// ArtifactTally reports how a check whose artifacts key is all went across
+// the artifacts of its type. Evaluated counts the artifacts whose conditions
+// were checked, and Passed the ones that satisfied them. Skipped counts the
+// ones applicable_when set aside. Failed lists the paths of the ones whose
+// conditions did not hold. A stale or undated artifact is in none of them.
+type ArtifactTally struct {
+	Mode      string   `json:"mode"`
+	Evaluated int      `json:"evaluated"`
+	Passed    int      `json:"passed"`
+	Skipped   int      `json:"skipped,omitempty"`
+	Failed    []string `json:"failed,omitempty"`
 }
 
 // ApplicableWhen reports how a check's applicable_when was decided, on the

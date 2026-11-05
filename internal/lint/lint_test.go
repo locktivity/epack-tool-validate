@@ -164,8 +164,8 @@ func TestRun_EnumThroughRefsAndNullableBranches(t *testing.T) {
 func TestRun_VacuousShapes(t *testing.T) {
 	tests := []struct{ name, condition string }{
 		{"none over a list", "path: $.accounts[*].storage.encryption_pct\n                op: lt\n                value: 100\n                cardinality: none"},
-		{"not_exists all", "path: $.accounts[*].iam.root_access_protected\n                op: not_exists\n                cardinality: all"},
-		{"exists none", "path: $.accounts[*].iam.root_access_protected\n                op: exists\n                cardinality: none"},
+		{"not_exists all", "path: $.accounts[*].logging.cloudtrail_enabled\n                op: not_exists\n                cardinality: all"},
+		{"exists none", "path: $.accounts[*].logging.cloudtrail_enabled\n                op: exists\n                cardinality: none"},
 		{"single not_exists", "path: $.provider\n                op: not_exists"},
 	}
 	for _, tt := range tests {
@@ -182,7 +182,7 @@ func TestRun_VacuousShapes(t *testing.T) {
 }
 
 func TestRun_AllOverAListIsNotVacuous(t *testing.T) {
-	r := lintProfile(t, header+requirement("R", "evidencepack/cloud-posture@v1", `              - path: $.accounts[*].iam.root_access_protected
+	r := lintProfile(t, header+requirement("R", "evidencepack/cloud-posture@v1", `              - path: $.accounts[*].logging.cloudtrail_enabled
                 op: eq
                 value: true
                 cardinality: all
@@ -485,10 +485,91 @@ func TestRun_GatedProfileLintsClean(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := lintProfile(t, string(profile))
-	if r.Status != "pass" || len(r.Diagnostics) != 1 {
+	if r.Status != "pass" {
 		t.Fatalf("status %s, findings %v", r.Status, codes(r))
 	}
-	if d := r.Diagnostics[0]; d.Code != CodeTypeUnchecked || d.Type != "evidencepack/identity-center-mfa-settings@v1" || d.Location != "all_of[3]" {
+	// The profile reads cloud-posture's iam fields, which moved to
+	// access-posture, so each such condition warns and none fails.
+	var unchecked []Diagnostic
+	for _, d := range r.Diagnostics {
+		switch d.Code {
+		case CodeMovedPath:
+		case CodeTypeUnchecked:
+			unchecked = append(unchecked, d)
+		default:
+			t.Errorf("unexpected %s at %s: %s", d.Code, d.Location, d.Message)
+		}
+	}
+	if len(unchecked) != 1 {
+		t.Fatalf("TYPE_UNCHECKED findings = %d, want 1", len(unchecked))
+	}
+	if d := unchecked[0]; d.Type != "evidencepack/identity-center-mfa-settings@v1" || d.Location != "all_of[3]" {
 		t.Errorf("got %s at %s for %s", d.Code, d.Location, d.Type)
 	}
+}
+
+func TestRun_MovedFieldWarnsWithItsNewField(t *testing.T) {
+	tests := []struct {
+		name, typ, path string
+		want            []string
+	}{
+		{"root access", "evidencepack/cloud-posture@v1", "$.accounts[*].iam.root_access_protected",
+			[]string{"left evidencepack/cloud-posture@v1 in epack v0.10.0", "root.root_mfa_coverage_pct at 100", "evidencepack/access-posture@v1"}},
+		{"key rotation", "evidencepack/cloud-posture@v1", "$.accounts[0].iam.access_key_rotation_compliant_pct",
+			[]string{"credentials.rotation_overdue_pct"}},
+		{"a field with no new one", "evidencepack/cloud-posture@v1", "$.accounts[*].iam.saml_provider_count",
+			[]string{"Nothing in evidencepack/access-posture@v1 replaces it"}},
+		{"scanner coverage", "evidencepack/vcs-posture@v1", "$.security_features.code_scanning_pct",
+			[]string{"coverage_pct", "evidencepack/vuln-scanning@v1"}},
+		{"two-factor", "evidencepack/vcs-posture@v1", "$.org_security.two_factor_required",
+			[]string{"sign_in.mfa_required"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cond := "              - path: " + tt.path + "\n                op: exists\n"
+			if strings.Contains(tt.path, "[*]") {
+				cond += "                cardinality: any\n"
+			}
+			r := lintProfile(t, header+requirement("R", tt.typ, cond))
+			if r.Status != "pass" || len(r.Diagnostics) != 1 || r.Diagnostics[0].Code != CodeMovedPath || r.Diagnostics[0].Severity != SeverityWarning {
+				t.Fatalf("status %s, findings %v", r.Status, codes(r))
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(r.Diagnostics[0].Message, want) {
+					t.Errorf("message %q lacks %q", r.Diagnostics[0].Message, want)
+				}
+			}
+		})
+	}
+	r := lintProfile(t, header+requirement("R", "evidencepack/cloud-posture@v1", `              - path: $.accounts[*].iam_typo.user_count
+                op: exists
+                cardinality: any
+`))
+	if !slices.Contains(codes(r), CodeUnknownPath) {
+		t.Errorf("a field that never existed reports %v, want UNKNOWN_PATH", codes(r))
+	}
+}
+
+func TestRun_InvalidArtifactsIsReportedOnItsClause(t *testing.T) {
+	r := lintProfile(t, header+`  - id: A
+    name: A statement
+    satisfied_by:
+      any_of:
+        - type: evidencepack/idp-posture@v1
+          artifacts: every
+          metadata_conditions:
+            all:
+              - path: $.provider
+                op: eq
+                value: okta
+`)
+	for _, d := range r.Diagnostics {
+		if d.Code == "INVALID_ARTIFACTS" {
+			if d.Location != "any_of[0]" {
+				t.Errorf("location = %q, want any_of[0]", d.Location)
+			}
+			return
+		}
+	}
+	t.Errorf("got %v, want INVALID_ARTIFACTS", codes(r))
 }

@@ -133,6 +133,15 @@ func TestProfileSchema_EnumsMatchTheCompiler(t *testing.T) {
 		}
 	}
 
+	var artifactModes []string
+	for name := range compiled.ValidArtifactModes {
+		artifactModes = append(artifactModes, name)
+	}
+	sort.Strings(artifactModes)
+	if got := enumStrings(t, def(t, schema, "clause"), "artifacts"); !slices.Equal(got, artifactModes) {
+		t.Errorf("schema artifacts %v, compiler %v", got, artifactModes)
+	}
+
 	var cardinalities, outsideGates []string
 	for name, cardinality := range compiled.ValidCardinalities {
 		cardinalities = append(cardinalities, name)

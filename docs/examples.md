@@ -309,15 +309,15 @@ Use cardinality when checking conditions across arrays:
 ```yaml
 requirements:
   - id: CLOUD-001
-    name: Root MFA Enabled (All Accounts)
-    category: Identity
+    name: Audit Logging On (All Accounts)
+    category: Logging
     satisfied_by:
       any_of:
         - type: evidencepack/cloud-posture@v1
           metadata_conditions:
             all:
-              # Check ALL accounts have root MFA enabled
-              - path: $.accounts[*].iam.root_mfa_enabled
+              # Check ALL accounts have audit logging on
+              - path: $.accounts[*].logging.audit_log_enabled
                 op: eq
                 value: true
                 cardinality: all

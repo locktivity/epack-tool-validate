@@ -13,6 +13,7 @@ See [docs/](docs/) for detailed documentation.
 - **Multi-Value Cardinality**: Check conditions across arrays with `all`, `any`, or `none` semantics
 - **Graduated Severity**: Clauses can specify severity levels for graded compliance reporting
 - **Freshness Checks**: Ensure artifacts are recent enough to satisfy requirements
+- **Every Artifact of a Type**: A clause with `artifacts: all` needs every artifact of its type to satisfy it, such as one `access-posture` file for each system. By default one is enough
 - **Applies When**: A clause can say when it applies (`applicable_when`), for a whole artifact, for each element of a list (`cardinality: each`), or from another artifact type. A clause that doesn't apply reads `not_applicable` and is set aside, so it never counts as a pass or blocks one
 - **Overlay Support**: Customize profiles with overlays (modify, skip, add requirements)
 - **Digest Verification**: Optionally verify profile integrity against manifest digests

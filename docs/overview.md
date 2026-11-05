@@ -65,12 +65,12 @@ Conditions use JSONPath expressions to evaluate artifact metadata:
 
 ### Cardinality for Multi-Value Paths
 
-When using JSONPath expressions that return multiple values (e.g., `$.accounts[*].iam.root_mfa_enabled`), you must specify how to evaluate them:
+When using JSONPath expressions that return multiple values (e.g., `$.accounts[*].logging.audit_log_enabled`), you must specify how to evaluate them:
 
 ```yaml
 metadata_conditions:
   all:
-    - path: $.accounts[*].iam.root_mfa_enabled
+    - path: $.accounts[*].logging.audit_log_enabled
       op: eq
       value: true
       cardinality: all  # ALL values must satisfy the condition
@@ -134,6 +134,22 @@ Use `max_age_days` when the date to check is inside the artifact body rather tha
         value: 365
 ```
 
+### Every Artifact of a Type
+
+A pack can hold several artifacts of one type, such as `idp-posture` files from two identity providers. A clause is satisfied when one of them satisfies it, so a strong result in one file hides a weak result in another. A clause with `artifacts: all` needs every file it reads to satisfy it instead:
+
+```yaml
+- type: evidencepack/idp-posture@v1
+  artifacts: all  # every identity provider must reach 90%
+  metadata_conditions:
+    all:
+      - path: $.user_security.mfa_coverage_pct
+        op: gte
+        value: 90
+```
+
+With `all`, one file whose conditions do not hold fails the clause, even when another file lacks the value. See [Configuration](configuration.md#every-artifact-of-a-type) for the full order and the counts each check reports.
+
 ### Applies When
 
 A clause can say when it applies with `applicable_when`. Its conditions take the same `path`, `op`, `value`, and `cardinality` as `metadata_conditions`:
@@ -147,7 +163,7 @@ A clause can say when it applies with `applicable_when`. Its conditions take the
         value: aws
   metadata_conditions:
     all:
-      - path: $.accounts[*].iam.root_mfa_enabled
+      - path: $.accounts[*].logging.audit_log_enabled
         op: eq
         value: true
         cardinality: all
@@ -163,19 +179,19 @@ A clause with `applicable_when` and no `metadata_conditions` passes whenever it 
 - type: evidencepack/cloud-posture@v1
   applicable_when:
     all:
-      - path: $.accounts[*].iam.user_count
-        op: gte
-        value: 1
+      - path: $.accounts[*].storage.storage_resources_present
+        op: eq
+        value: true
         cardinality: each
   metadata_conditions:
     all:
-      - path: $.accounts[*].iam.mfa_coverage_pct
+      - path: $.accounts[*].storage.encryption_pct
         op: gte
         value: 100
         cardinality: all
 ```
 
-Here an account with no IAM users is skipped. An account whose `user_count` is absent is graded anyway, so it passes only if its own percentage does. When every account is skipped, the clause is not applicable. When the list is absent or empty, the clause is unknown.
+Here an account with no storage is skipped. An account whose `storage_resources_present` is absent is graded anyway, so it passes only if its own percentage does. When every account is skipped, the clause is not applicable. When the list is absent or empty, the clause is unknown.
 
 **Another artifact type.** With `type`, the conditions read a different artifact type than the clause:
 

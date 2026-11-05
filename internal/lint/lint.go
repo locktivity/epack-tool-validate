@@ -28,6 +28,7 @@ const (
 	CodeOverlay          = "OVERLAY_FAILED"
 	CodeSchemaLoad       = "SCHEMA_LOAD_FAILED"
 	CodeUnknownPath      = "UNKNOWN_PATH"
+	CodeMovedPath        = "MOVED_PATH"
 	CodePathShape        = "PATH_SHAPE"
 	CodePathUnchecked    = "PATH_UNCHECKED"
 	CodeTypeUnchecked    = "TYPE_UNCHECKED"
@@ -202,7 +203,7 @@ func isConditionCode(code string) bool {
 }
 
 func isClauseCode(code string) bool {
-	return code == diagnostic.CodeMissingType || code == diagnostic.CodeInvalidSeverity
+	return code == diagnostic.CodeMissingType || code == diagnostic.CodeInvalidSeverity || code == diagnostic.CodeInvalidArtifacts
 }
 
 func (l *linter) checkRequirement(req *raw.RawRequirement, broken map[conditionKey]bool) {
@@ -308,6 +309,10 @@ func (l *linter) checkCondition(req *raw.RawRequirement, schema *evidenceschema.
 		var unchecked *evidenceschema.UncheckedError
 		switch {
 		case errors.As(err, &unknown):
+			if message, ok := movedPath(typ, cond.Path, unknown.Field); ok {
+				at(SeverityWarning, CodeMovedPath, message)
+				return
+			}
 			parent := unknown.Parent
 			if parent == "$" {
 				parent = "the top level"

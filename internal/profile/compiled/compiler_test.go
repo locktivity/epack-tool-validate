@@ -899,3 +899,43 @@ func TestDiagnose_ApplicableWhenErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestCompile_Artifacts(t *testing.T) {
+	clause := func(artifacts string) string {
+		key := ""
+		if artifacts != "" {
+			key = "          artifacts: " + artifacts + "\n"
+		}
+		return `        - type: evidencepack/access-posture@v1
+` + key + `          metadata_conditions:
+            all:
+              - path: $.sign_in.sso_required
+                op: eq
+                value: true
+`
+	}
+	for _, tc := range []struct {
+		artifacts string
+		want      ArtifactMode
+	}{
+		{"", ArtifactModeAny},
+		{"any", ArtifactModeAny},
+		{"all", ArtifactModeAll},
+	} {
+		compiled, err := Compile(gateProfile(t, clause(tc.artifacts)), "p.yaml")
+		if err != nil {
+			t.Fatalf("artifacts %q: Compile() error: %v", tc.artifacts, err)
+		}
+		if got := compiled.Requirements[0].Clauses[0].Artifacts; got != tc.want {
+			t.Errorf("artifacts %q compiled to %s, want %s", tc.artifacts, got, tc.want)
+		}
+	}
+
+	diags := Diagnose(gateProfile(t, clause("every")), "p.yaml")
+	if len(diags) != 1 || diags[0].Code != diagnostic.CodeInvalidArtifacts || diags[0].Location.ClauseIndex != 0 {
+		t.Fatalf("diagnostics = %+v, want one INVALID_ARTIFACTS on clause 0", diags)
+	}
+	if !strings.Contains(diags[0].Message, `"every"`) {
+		t.Errorf("message %q does not name the value", diags[0].Message)
+	}
+}

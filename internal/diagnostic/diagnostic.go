@@ -85,6 +85,7 @@ const (
 	CodeEmptyClauses         = "EMPTY_CLAUSES"
 	CodeMissingType          = "MISSING_TYPE"
 	CodeInvalidSeverity      = "INVALID_SEVERITY"
+	CodeInvalidArtifacts     = "INVALID_ARTIFACTS"
 	CodeInvalidOperator      = "INVALID_OPERATOR"
 	CodeInvalidJSONPath      = "INVALID_JSONPATH"
 	CodeInvalidCardinality   = "INVALID_CARDINALITY"

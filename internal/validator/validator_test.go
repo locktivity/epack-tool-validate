@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -3362,5 +3363,108 @@ func TestValidate_NotApplicableIsCountedAndNeverChangesTheStatus(t *testing.T) {
 	}
 	if got := result.ByCategory["Other"]; got != (CategorySummary{NotApplicable: 1}) {
 		t.Errorf("Other = %+v", got)
+	}
+}
+
+// artifactsProfile is a requirement with one clause over idp-posture. key
+// holds the clause's own keys beside type, each line indented to match.
+func artifactsProfile(t *testing.T, key string) *compiled.CompiledProfile {
+	t.Helper()
+	return compileProfile(t, `id: artifacts
+name: Artifacts
+version: "1.0.0"
+requirements:
+  - id: IDP-001
+    name: MFA
+    satisfied_by:
+      any_of:
+        - type: evidencepack/idp-posture@v1
+`+key+`          metadata_conditions:
+            all:
+              - path: $.mfa_coverage_pct
+                op: gte
+                value: 90
+`)
+}
+
+// Two files of one type, such as Okta's and Google Workspace's idp-posture.
+// With artifacts: any, the default, one file satisfying the clause is
+// enough. With artifacts: all, every file the clause reads must, and one
+// definite failure decides the clause even when another file lacks the
+// value.
+func TestValidate_Artifacts(t *testing.T) {
+	idp := func(path string, body map[string]any) IndexedArtifact {
+		return artifactOf(path, "evidencepack/idp-posture@v1", body)
+	}
+	stale := func(a IndexedArtifact) IndexedArtifact {
+		old := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		a.CollectedAt = &old
+		return a
+	}
+	okta := idp("artifacts/okta.idp-posture.json", map[string]any{"mfa_coverage_pct": 100.0, "in_scope": true})
+	entra := idp("artifacts/microsoft-cloud.idp-posture.json", map[string]any{"mfa_coverage_pct": 95.0, "in_scope": true})
+	weak := idp("artifacts/google-workspace.idp-posture.json", map[string]any{"mfa_coverage_pct": 40.0, "in_scope": true})
+	absent := idp("artifacts/jumpcloud.idp-posture.json", map[string]any{"in_scope": true})
+	outOfScope := idp("artifacts/google-workspace.idp-posture.json", map[string]any{"mfa_coverage_pct": 40.0, "in_scope": false})
+
+	type want struct {
+		status, failureKind, artifact string
+		tally                         *ArtifactTally // all only
+	}
+	tally := func(evaluated, passed, skipped int, failed ...string) *ArtifactTally {
+		return &ArtifactTally{Mode: "all", Evaluated: evaluated, Passed: passed, Skipped: skipped, Failed: failed}
+	}
+	const freshness = "          freshness:\n            max_age_days: 30\n"
+	const gate = "          applicable_when:\n            all:\n              - path: $.in_scope\n                op: eq\n                value: true\n"
+	cases := []struct {
+		name     string
+		keys     string
+		files    []IndexedArtifact
+		any, all want
+	}{
+		{"a strong file and a weak one", "", []IndexedArtifact{okta, weak},
+			want{"pass", "", okta.Path, nil}, want{"fail", "condition", weak.Path, tally(2, 1, 0, weak.Path)}},
+		{"the same two in the other order", "", []IndexedArtifact{weak, okta},
+			want{"pass", "", okta.Path, nil}, want{"fail", "condition", weak.Path, tally(2, 1, 0, weak.Path)}},
+		{"two strong files", "", []IndexedArtifact{okta, entra},
+			want{"pass", "", okta.Path, nil}, want{"pass", "", "", tally(2, 2, 0)}},
+		{"one strong file", "", []IndexedArtifact{okta},
+			want{"pass", "", okta.Path, nil}, want{"pass", "", okta.Path, tally(1, 1, 0)}},
+		{"one weak file", "", []IndexedArtifact{weak},
+			want{"fail", "condition", weak.Path, nil}, want{"fail", "condition", weak.Path, tally(1, 0, 0, weak.Path)}},
+		{"a weak file and one without the value", "", []IndexedArtifact{weak, absent},
+			want{"unknown", "insufficient_evidence", absent.Path, nil}, want{"fail", "condition", weak.Path, tally(2, 0, 0, weak.Path)}},
+		{"a strong file and one without the value", "", []IndexedArtifact{absent, okta},
+			want{"pass", "", okta.Path, nil}, want{"unknown", "insufficient_evidence", absent.Path, tally(2, 1, 0)}},
+		{"no file of the type", "", nil,
+			want{"fail", "missing", "", nil}, want{"fail", "missing", "", nil}},
+		{"a fresh strong file and a stale one", freshness, []IndexedArtifact{okta, stale(entra)},
+			want{"pass", "", okta.Path, nil}, want{"fail", "stale", entra.Path, tally(1, 1, 0)}},
+		{"a weak file the gate sets aside", gate, []IndexedArtifact{okta, outOfScope},
+			want{"pass", "", okta.Path, nil}, want{"pass", "", okta.Path, tally(1, 1, 1)}},
+		{"every file set aside", gate, []IndexedArtifact{outOfScope},
+			want{"not_applicable", "", "", nil}, want{"not_applicable", "", "", tally(0, 0, 1)}},
+	}
+	for _, tc := range cases {
+		for _, mode := range []struct {
+			key  string
+			want want
+		}{{"", tc.any}, {"          artifacts: all\n", tc.all}} {
+			name := tc.name + " (any)"
+			if mode.key != "" {
+				name = tc.name + " (all)"
+			}
+			t.Run(name, func(t *testing.T) {
+				result := New().Validate(makeTestContext(), artifactsProfile(t, mode.key+tc.keys), packOf(tc.files...), "")
+				r := result.Requirements[0]
+				if r.Status != mode.want.status || r.FailureKind != mode.want.failureKind || r.Artifact != mode.want.artifact {
+					t.Errorf("status %q, failure kind %q, artifact %q; want %q, %q, %q",
+						r.Status, r.FailureKind, r.Artifact, mode.want.status, mode.want.failureKind, mode.want.artifact)
+				}
+				if got := r.Checks[0].Artifacts; !reflect.DeepEqual(got, mode.want.tally) {
+					t.Errorf("tally %+v, want %+v", got, mode.want.tally)
+				}
+			})
+		}
 	}
 }

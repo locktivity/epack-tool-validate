@@ -114,6 +114,10 @@
           "enum": ["critical", "high", "medium", "low", ""],
           "description": "Set on a clause that describes a failure. A matching clause with a severity marks the requirement as failing at that severity. Leave empty for a clause that describes a pass."
         },
+        "artifacts": {
+          "enum": ["any", "all"],
+          "description": "How many artifacts of the type must satisfy the clause. any, the default, needs one. all needs every artifact the clause reads, such as one access-posture file per system. Artifacts that applicable_when sets aside are not read."
+        },
         "freshness": {
           "type": "object",
           "additionalProperties": false,

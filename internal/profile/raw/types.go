@@ -39,7 +39,8 @@ type RawSatisfiedBy struct {
 // RawClause represents a single satisfaction clause.
 type RawClause struct {
 	Type               string         `yaml:"type"`
-	Severity           string         `yaml:"severity,omitempty"` // "critical"|"high"|"medium"|"low" OR empty=pass
+	Severity           string         `yaml:"severity,omitempty"`  // "critical"|"high"|"medium"|"low" OR empty=pass
+	Artifacts          string         `yaml:"artifacts,omitempty"` // "any" (default) or "all": one artifact of the type, or every one, must satisfy the clause
 	Freshness          *RawFreshness  `yaml:"freshness,omitempty"`
 	ApplicableWhen     *RawGate       `yaml:"applicable_when,omitempty"`
 	MetadataConditions *RawConditions `yaml:"metadata_conditions,omitempty"`

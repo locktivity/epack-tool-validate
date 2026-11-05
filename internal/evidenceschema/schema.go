@@ -19,6 +19,9 @@ var bundledTypes = []string{
 	"evidencepack/idp-posture@v1",
 	"evidencepack/cloud-posture@v1",
 	"evidencepack/vcs-posture@v1",
+	"evidencepack/endpoint-posture@v1",
+	"evidencepack/access-posture@v1",
+	"evidencepack/vuln-scanning@v1",
 	"evidencepack/email-dns@v1",
 	"evidencepack/tls@v1",
 }
