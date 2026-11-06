@@ -444,7 +444,7 @@ func (v *Validator) evaluateClause(ctx *Context, clause *compiled.CompiledClause
 				ApplicableWhen: &ApplicableWhen{Type: gate.Schema},
 			}
 		}
-		decision, artifactPath := decideGateAcross(gate, gateArtifacts, ctx.Now())
+		decision, artifactPath := decideGateAcross(ctx, gate, gateArtifacts, ctx.Now())
 		switch decision.Verdict {
 		case VerdictFalse:
 			return notApplicableOutcome(clause, artifactPath, decision)
@@ -663,7 +663,9 @@ func evaluateArtifact(ctx *Context, clause *compiled.CompiledClause, gate *compi
 	var admitted []any
 	var gateReport *ApplicableWhen
 	if gate != nil {
-		decision := decideGate(gate, artifact.Body, ctx.Now())
+		decision := decideGate(gate, artifact.Body, ctx.Now(), func(cond *compiled.CompiledCondition) (*compiled.CompiledCondition, any) {
+			return movedRead(ctx, gate.Schema, artifact, cond)
+		})
 		switch decision.Verdict {
 		case VerdictFalse:
 			return judgedArtifact{kind: artifactSetAside, outcome: notApplicableOutcome(clause, artifact.Path, decision)}
@@ -751,7 +753,11 @@ type gateDecision struct {
 // is absent. The clause does not apply when the AND is false, or when it is
 // true and every element was skipped. It is unknown when the AND is unknown
 // or the list is absent or empty.
-func decideGate(gate *compiled.CompiledGate, body any, now time.Time) gateDecision {
+//
+// moved, when set, gives a condition on a field the artifact doesn't have
+// the condition to read instead and the body to read it in (see movedRead).
+// A cardinality each condition picks list elements and never falls back.
+func decideGate(gate *compiled.CompiledGate, body any, now time.Time, moved func(*compiled.CompiledCondition) (*compiled.CompiledCondition, any)) gateDecision {
 	report := &ApplicableWhen{Type: gate.Schema}
 
 	var elements []any
@@ -782,7 +788,7 @@ func decideGate(gate *compiled.CompiledGate, body any, now time.Time) gateDecisi
 			report.Conditions = append(report.Conditions, check)
 			continue
 		}
-		verdict, detail := evaluateSingleConditionAt(cond, body, now)
+		verdict, detail := evaluateGateCondition(cond, body, now, moved)
 		report.Conditions = append(report.Conditions, conditionCheckFromFailure(detail, verdict))
 		switch {
 		case verdict == VerdictFalse:
@@ -828,15 +834,33 @@ func decideGate(gate *compiled.CompiledGate, body any, now time.Time) gateDecisi
 	return decision
 }
 
+// evaluateGateCondition evaluates one gate condition, on the field that holds
+// the same value now when the artifact no longer has the one it names.
+func evaluateGateCondition(cond *compiled.CompiledCondition, body any, now time.Time, moved func(*compiled.CompiledCondition) (*compiled.CompiledCondition, any)) (Verdict, *ConditionFailure) {
+	if moved != nil {
+		if instead, insteadBody := moved(cond); instead != nil {
+			verdict, detail := evaluateSingleConditionAt(instead, insteadBody, now)
+			if detail != nil {
+				detail.Path = cond.Path
+			}
+			return verdict, detail
+		}
+	}
+	return evaluateSingleConditionAt(cond, body, now)
+}
+
 // decideGateAcross decides a gate on another type's artifacts. It holds when
 // any artifact decides true, is unknown when none does and any is unknown,
 // and is false only when every artifact decides false. The artifact that
 // decided is reported.
-func decideGateAcross(gate *compiled.CompiledGate, artifacts []IndexedArtifact, now time.Time) (gateDecision, string) {
+func decideGateAcross(ctx *Context, gate *compiled.CompiledGate, artifacts []IndexedArtifact, now time.Time) (gateDecision, string) {
 	var unknown, rejected *gateDecision
 	var unknownPath, rejectedPath string
 	for _, artifact := range artifacts {
-		decision := decideGate(gate, artifact.Body, now)
+		moved := func(cond *compiled.CompiledCondition) (*compiled.CompiledCondition, any) {
+			return movedRead(ctx, gate.Schema, artifact, cond)
+		}
+		decision := decideGate(gate, artifact.Body, now, moved)
 		switch decision.Verdict {
 		case VerdictTrue:
 			return decision, artifact.Path

@@ -140,3 +140,68 @@ requirements:
 		t.Errorf("not required: status %q at %q, want fail at critical", got.Status, got.Severity)
 	}
 }
+
+// An applies-when condition on a moved field reads the field that holds its
+// value once the old one is gone, on the clause's own type or another.
+func TestValidate_MovedFieldsInGates(t *testing.T) {
+	profile := compileProfile(t, `id: moved-gates
+name: Moved gates
+version: "1.0.0"
+requirements:
+  - id: IC-001
+    name: Identity Center MFA settings are on file
+    satisfied_by:
+      any_of:
+        - type: evidencepack/identity-center-mfa-settings@v1
+          applicable_when:
+            type: evidencepack/cloud-posture@v1
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+              - path: $.workforce_sign_in.in_use
+                op: eq
+                value: true
+          metadata_conditions:
+            all:
+              - path: $.metadata.captured_on
+                op: exists
+  - id: LOG-001
+    name: Logged accounts keep logs a year
+    satisfied_by:
+      any_of:
+        - type: evidencepack/cloud-posture@v1
+          applicable_when:
+            all:
+              - path: $.accounts[*].logging.cloudtrail_enabled
+                op: eq
+                value: true
+                cardinality: all
+          metadata_conditions:
+            all:
+              - path: $.provider
+                op: eq
+                value: aws
+`)
+	now := TestContext(time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC))
+	pack := func(sso bool) *PackIndex {
+		return packOf(
+			artifactOf("artifacts/aws.cloud-posture.json", "evidencepack/cloud-posture@v1", map[string]any{
+				"provider": "aws", "accounts": []any{map[string]any{"logging": map[string]any{"audit_log_enabled": true}}},
+			}),
+			artifactOf("artifacts/aws.access-posture.json", "evidencepack/access-posture@v1", map[string]any{"sign_in": map[string]any{"sso_configured": sso}}),
+			artifactOf("artifacts/aws.identity-center-mfa-settings.json", "evidencepack/identity-center-mfa-settings@v1", map[string]any{"metadata": map[string]any{"captured_on": "2024-06-01"}}),
+		)
+	}
+
+	result := New().Validate(now, profile, pack(true), "sha256:test")
+	if got := result.Requirements[0].Status; got != "pass" {
+		t.Errorf("IC-001 with SSO set up: status %q, want pass", got)
+	}
+	if got := result.Requirements[1].Status; got != "pass" {
+		t.Errorf("LOG-001 with the renamed field: status %q, want pass", got)
+	}
+	if got := New().Validate(now, profile, pack(false), "sha256:test").Requirements[0].Status; got != "not_applicable" {
+		t.Errorf("IC-001 without SSO: status %q, want not_applicable", got)
+	}
+}

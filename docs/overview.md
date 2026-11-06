@@ -247,8 +247,10 @@ the same `<run>`. Another run's artifact is never read, so a check on GitHub
 never takes Okta's value. The result reports the path the profile names.
 
 A profile written before epack v0.10.0 keeps working after a later release
-stops writing the old fields. Applies-when conditions, and conditions that
-read a gate's list, read only the fields they name.
+stops writing the old fields. Applies-when conditions fall back the same way,
+on the clause's own type or the type the gate names. A condition with
+cardinality each, and a condition that reads the list it picks from, read
+only the fields they name.
 
 ## Manual Requirements and Asserted Support
 
