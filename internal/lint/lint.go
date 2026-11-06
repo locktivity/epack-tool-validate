@@ -309,7 +309,7 @@ func (l *linter) checkCondition(req *raw.RawRequirement, schema *evidenceschema.
 		var unchecked *evidenceschema.UncheckedError
 		switch {
 		case errors.As(err, &unknown):
-			if message, ok := movedPath(typ, cond.Path, unknown.Field); ok {
+			if message, ok := movedPath(typ, cond.Path, unknown.Field, false); ok {
 				at(SeverityWarning, CodeMovedPath, message)
 				return
 			}
@@ -328,6 +328,11 @@ func (l *linter) checkCondition(req *raw.RawRequirement, schema *evidenceschema.
 			at(SeverityWarning, CodePathUnchecked, err.Error())
 		}
 		return
+	}
+	if block, ok := movedBlockIn(typ, cond.Path); ok {
+		if message, ok := movedPath(typ, cond.Path, block, true); ok {
+			at(SeverityWarning, CodeMovedPath, message)
+		}
 	}
 	if node.Open || cond.Value == nil {
 		return

@@ -51,11 +51,13 @@ var movedFields = map[string]string{
 }
 
 // movedPath returns the warning for a condition whose path reads a field
-// epack v0.10.0 moved to another type, where block is the first field the
-// type no longer declares. It reports false for any other unknown field.
-// A profile keeps such a condition beside one on the new field while
-// collectors upgrade, so the finding is a warning.
-func movedPath(typ, path, block string) (string, bool) {
+// epack v0.10.0 moved to another type, where block is the moved object the
+// path goes through. declared is true when the type's schema still declares
+// the block, as deprecated, and false when block is the first field it no
+// longer declares. It reports false for any other field. A profile keeps
+// such a condition beside one on the new field while collectors upgrade, so
+// the finding is a warning.
+func movedPath(typ, path, block string, declared bool) (string, bool) {
 	to, ok := movedBlocks[typ][block]
 	if !ok {
 		return "", false
@@ -77,7 +79,22 @@ func movedPath(typ, path, block string) (string, bool) {
 	default:
 		now = fmt.Sprintf("Read %s in %s", where, to)
 	}
+	if declared {
+		return fmt.Sprintf("%s is deprecated in %s since epack v0.10.0, and a later release removes it. %s. Keep this condition beside one on the new field until then", path, typ, now), true
+	}
 	return fmt.Sprintf("%s left %s in epack v0.10.0. %s. Keep this condition beside one on the new field while collectors upgrade", path, typ, now), true
+}
+
+// movedBlockIn returns the moved object a path on typ goes through, if any.
+func movedBlockIn(typ, path string) (string, bool) {
+	for block := range movedBlocks[typ] {
+		for _, sep := range []string{".", "[", ""} {
+			if (sep == "" && strings.HasSuffix(path, "."+block)) || (sep != "" && strings.Contains(path, "."+block+sep)) {
+				return block, true
+			}
+		}
+	}
+	return "", false
 }
 
 // fieldAfter returns the name of the field that follows block in path, or

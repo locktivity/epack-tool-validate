@@ -514,7 +514,7 @@ func TestRun_MovedFieldWarnsWithItsNewField(t *testing.T) {
 		want            []string
 	}{
 		{"root access", "evidencepack/cloud-posture@v1", "$.accounts[*].iam.root_access_protected",
-			[]string{"left evidencepack/cloud-posture@v1 in epack v0.10.0", "root.root_mfa_coverage_pct at 100", "evidencepack/access-posture@v1"}},
+			[]string{"is deprecated in evidencepack/cloud-posture@v1", "root.root_mfa_coverage_pct at 100", "evidencepack/access-posture@v1"}},
 		{"key rotation", "evidencepack/cloud-posture@v1", "$.accounts[0].iam.access_key_rotation_compliant_pct",
 			[]string{"credentials.rotation_overdue_pct"}},
 		{"a field with no new one", "evidencepack/cloud-posture@v1", "$.accounts[*].iam.saml_provider_count",
@@ -547,6 +547,12 @@ func TestRun_MovedFieldWarnsWithItsNewField(t *testing.T) {
 `))
 	if !slices.Contains(codes(r), CodeUnknownPath) {
 		t.Errorf("a field that never existed reports %v, want UNKNOWN_PATH", codes(r))
+	}
+	// A schema from before epack v0.10.1 no longer declares the moved
+	// block, so the field reads as having left the type.
+	message, ok := movedPath("evidencepack/cloud-posture@v1", "$.accounts[*].iam.user_count", "iam", false)
+	if !ok || !strings.Contains(message, "left evidencepack/cloud-posture@v1 in epack v0.10.0") || !strings.Contains(message, "members.local_member_count") {
+		t.Errorf("undeclared block: %q, %v", message, ok)
 	}
 }
 

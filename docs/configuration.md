@@ -70,7 +70,7 @@ Lint reports every problem it finds, not just the first. Findings print to stder
 | Code | Severity | Meaning |
 |------|----------|---------|
 | `UNKNOWN_PATH` | error | The path names a field the artifact's schema does not declare. Includes the declared fields at that level and the closest declared paths |
-| `MOVED_PATH` | warning | The path reads a field that epack v0.10.0 moved to another type, such as cloud-posture's `iam`, which moved to access-posture. Names the new field. A profile keeps the old condition beside the new one while collectors upgrade |
+| `MOVED_PATH` | warning | The path reads a field that epack v0.10.0 moved to another type, such as cloud-posture's `iam`, which moved to access-posture. The old field is deprecated, and a later release removes it. Names the new field. A profile keeps the old condition beside the new one until then |
 | `PATH_SHAPE` | error | The path indexes something that is not an array, or reads a field of something that is not an object |
 | `OPERATOR_TYPE_MISMATCH` | error | A numeric operator on a non-numeric field, or `max_age_days` on a field that is not a date string |
 | `NEVER_MATCHES` | error | `eq` against a value the field can never hold: the wrong type, a value outside its allowed values, or a whole object. Also a numeric operator given a non-numeric value |
