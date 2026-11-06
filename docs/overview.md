@@ -235,6 +235,21 @@ comparison. The overall status rolls up as fail over unknown over pass, and
 `summary.unknown` counts the requirements that could not be scored. Unknown
 requirements never appear in `key_failures`.
 
+## Deprecated Fields
+
+A field the bundled schemas mark deprecated can name a field that holds the
+same value, in its `x-epack-replaced-by` with `same`. When an artifact has no
+value at all at such a field, the condition reads the new field instead. A
+field renamed in its own schema is read in the same artifact. A field that
+moved to another schema is read in that schema's artifact from the same
+collector run, which is the artifact at `artifacts/<run>.<kind>.json` with
+the same `<run>`. Another run's artifact is never read, so a check on GitHub
+never takes Okta's value. The result reports the path the profile names.
+
+A profile written before epack v0.10.0 keeps working after a later release
+stops writing the old fields. Applies-when conditions, and conditions that
+read a gate's list, read only the fields they name.
+
 ## Manual Requirements and Asserted Support
 
 Not every requirement is machine-checkable. A written policy or a signed

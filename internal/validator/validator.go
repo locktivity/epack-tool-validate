@@ -20,6 +20,7 @@ func New() *Validator {
 
 // Validate evaluates a compiled profile against a pack index.
 func (v *Validator) Validate(ctx *Context, profile *compiled.CompiledProfile, pack *PackIndex, profileDigest string) *Result {
+	ctx = ctx.withPack(pack)
 	now := ctx.Now()
 
 	result := &Result{
@@ -674,7 +675,10 @@ func evaluateArtifact(ctx *Context, clause *compiled.CompiledClause, gate *compi
 	}
 
 	// Artifact is fresh (or no freshness requirement) - evaluate conditions
-	condResult := evaluateConditionsOn(clause.Conditions, artifact.Body, admitted, ctx.Now())
+	moved := func(cond *compiled.CompiledCondition) (*compiled.CompiledCondition, any) {
+		return movedRead(ctx, clause.Schema, artifact, cond)
+	}
+	condResult := evaluateConditionsOn(clause.Conditions, artifact.Body, admitted, ctx.Now(), moved)
 	outcome := ClauseOutcome{
 		ArtifactPath:    artifact.Path,
 		Origin:          clause.Origin,
@@ -946,7 +950,7 @@ func conditionCheckFromFailure(detail *ConditionFailure, verdict Verdict) Condit
 
 // ConditionFailure captures details about a failed condition.
 type ConditionFailure struct {
-	Path     string         // JSONPath that was evaluated
+	Path     string         // The condition's JSONPath, as the profile writes it
 	Expected *ExpectedValue // Structured expected value
 	Actual   any            // Actual value (typed)
 	Delta    *float64       // Delta for numeric comparisons (actual - expected)
@@ -968,19 +972,31 @@ func evaluateConditionsWithDetails(conditions []compiled.CompiledCondition, body
 }
 
 func evaluateConditionsWithDetailsAt(conditions []compiled.CompiledCondition, body any, now time.Time) ConditionResult {
-	return evaluateConditionsOn(conditions, body, nil, now)
+	return evaluateConditionsOn(conditions, body, nil, now, nil)
 }
 
 // evaluateConditionsOn is evaluateConditionsWithDetailsAt for a clause whose
 // gate admitted some elements of its list. Conditions that read that list
 // (Element set) count only the admitted elements.
-func evaluateConditionsOn(conditions []compiled.CompiledCondition, body any, admitted []any, now time.Time) ConditionResult {
+//
+// moved, when set, gives a condition on a field the artifact doesn't have
+// the condition to read instead and the body to read it in (see movedRead).
+func evaluateConditionsOn(conditions []compiled.CompiledCondition, body any, admitted []any, now time.Time, moved func(*compiled.CompiledCondition) (*compiled.CompiledCondition, any)) ConditionResult {
 	if len(conditions) == 0 {
 		return ConditionResult{Verdict: VerdictTrue, Detail: nil}
 	}
 
 	evaluate := func(cond *compiled.CompiledCondition) (Verdict, *ConditionFailure) {
 		if cond.Element == nil {
+			if moved != nil {
+				if instead, insteadBody := moved(cond); instead != nil {
+					verdict, detail := evaluateSingleConditionAt(instead, insteadBody, now)
+					if detail != nil {
+						detail.Path = cond.Path
+					}
+					return verdict, detail
+				}
+			}
 			return evaluateSingleConditionAt(cond, body, now)
 		}
 		// The admitted elements become the root list, so the cardinality

@@ -3,6 +3,8 @@ package lint
 import (
 	"fmt"
 	"strings"
+
+	"github.com/locktivity/epack-tool-validate/internal/evidenceschema"
 )
 
 const (
@@ -109,4 +111,16 @@ func fieldAfter(path, block string) string {
 		rest = rest[:j]
 	}
 	return rest
+}
+
+// sameValuePath returns the warning for a condition on a deprecated field
+// whose schema names a field that holds the same value. The validator reads
+// that field from the same collector run once the old one is gone, so the
+// condition needs no change.
+func sameValuePath(typ, path string, moved evidenceschema.Moved) string {
+	why := ""
+	if moved.Reason != "" {
+		why = " " + strings.TrimSuffix(moved.Reason, ".") + "."
+	}
+	return fmt.Sprintf("%s is deprecated in %s, and a later release stops writing it.%s Once it is gone, the validator reads %s in %s from the same collector run, so this condition needs no change", path, typ, why, moved.Path, moved.Schema)
 }

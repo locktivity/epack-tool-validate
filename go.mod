@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.10
 
 require (
-	github.com/locktivity/epack v0.10.1
+	github.com/locktivity/epack v0.10.4
 	github.com/ohler55/ojg v1.24.1
 	golang.org/x/sys v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
