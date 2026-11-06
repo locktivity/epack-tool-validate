@@ -3,6 +3,8 @@ package validator
 import (
 	"sync"
 
+	"github.com/ohler55/ojg/jp"
+
 	"github.com/locktivity/epack-tool-validate/internal/condition"
 	"github.com/locktivity/epack-tool-validate/internal/evidenceschema"
 	"github.com/locktivity/epack-tool-validate/internal/profile/compiled"
@@ -19,19 +21,22 @@ var movedSchemas = sync.OnceValue(func() *evidenceschema.Registry {
 	return registry
 })
 
-// movedConditions caches movedCondition by schema, path, and cardinality.
-var movedConditions sync.Map
+// movedPaths caches movedPath by schema, path, and cardinality.
+var movedPaths sync.Map
 
 type movedKey struct {
 	schema, path string
 	cardinality  compiled.Cardinality
 }
 
-// movedTo is a condition rewritten onto the field that holds the same value
-// now, and the schema of the artifact that field sits in.
-type movedTo struct {
-	schema    string
-	condition compiled.CompiledCondition
+// movedField is where a field's value is now: the schema, and the path
+// parsed the way a condition with the same cardinality parses it.
+type movedField struct {
+	schema   string
+	path     string
+	expr     jp.Expr
+	baseExpr jp.Expr
+	isMulti  bool
 }
 
 // movedRead returns the condition to read instead of cond, and the body to
@@ -40,60 +45,63 @@ type movedTo struct {
 // renamed in its own schema is read in the same artifact. A field moved to
 // another schema is read in the artifact of that schema the same collector
 // run wrote, so a check never takes another system's value. It returns nil
-// otherwise, and cond reads artifact as the profile wrote it.
+// otherwise, and cond reads artifact as the profile wrote it. The condition
+// keeps cond's operator, value, and cardinality.
 func movedRead(ctx *Context, schema string, artifact IndexedArtifact, cond *compiled.CompiledCondition) (*compiled.CompiledCondition, any) {
 	if len(cond.Expr.Get(artifact.Body)) > 0 {
 		return nil, nil
 	}
-	to := movedCondition(schema, cond)
+	to := movedPath(schema, cond)
 	if to == nil {
 		return nil, nil
 	}
-	if to.schema == schema {
-		return &to.condition, artifact.Body
+	body := artifact.Body
+	if to.schema != schema {
+		sibling, ok := ctx.pack.Sibling(artifact, to.schema)
+		if !ok {
+			return nil, nil
+		}
+		body = sibling.Body
 	}
-	sibling, ok := ctx.pack.Sibling(artifact, to.schema)
-	if !ok {
-		return nil, nil
-	}
-	return &to.condition, sibling.Body
+	rewritten := *cond
+	rewritten.Path, rewritten.Expr, rewritten.BaseExpr, rewritten.IsMulti = to.path, to.expr, to.baseExpr, to.isMulti
+	return &rewritten, body
 }
 
-// movedCondition returns cond rewritten onto the field that holds its
-// field's value now, or nil when the schemas name no such field.
-func movedCondition(schema string, cond *compiled.CompiledCondition) *movedTo {
+// movedPath returns where cond's field holds its value now, or nil when the
+// schemas name no field that holds the same value.
+func movedPath(schema string, cond *compiled.CompiledCondition) *movedField {
 	key := movedKey{schema: schema, path: cond.Path, cardinality: cond.Cardinality}
-	if cached, ok := movedConditions.Load(key); ok {
-		return cached.(*movedTo)
+	if cached, ok := movedPaths.Load(key); ok {
+		return cached.(*movedField)
 	}
-	to := buildMovedCondition(schema, cond)
-	movedConditions.Store(key, to)
+	to := buildMovedPath(schema, cond.Path, cond.Cardinality)
+	movedPaths.Store(key, to)
 	return to
 }
 
-func buildMovedCondition(schema string, cond *compiled.CompiledCondition) *movedTo {
+func buildMovedPath(schema, path string, cardinality compiled.Cardinality) *movedField {
 	registry := movedSchemas()
 	if registry == nil {
 		return nil
 	}
-	moved, ok := registry.MovedField(schema, cond.Path)
+	moved, ok := registry.MovedField(schema, path)
 	if !ok || !moved.Same || moved.Path == "" {
 		return nil
 	}
-	rewritten := *cond
-	rewritten.Path = moved.Path
-	if cond.Cardinality == compiled.CardinalitySingle {
+	to := &movedField{schema: moved.Schema, path: moved.Path}
+	if cardinality == compiled.CardinalitySingle {
 		expr, err := condition.ParseJSONPath(moved.Path)
 		if err != nil {
 			return nil
 		}
-		rewritten.Expr = expr
-	} else {
-		expr, isMulti, err := condition.ParseJSONPathMulti(moved.Path)
-		if err != nil {
-			return nil
-		}
-		rewritten.Expr, rewritten.IsMulti, rewritten.BaseExpr = expr, isMulti, condition.ExtractBasePath(expr)
+		to.expr = expr
+		return to
 	}
-	return &movedTo{schema: moved.Schema, condition: rewritten}
+	expr, isMulti, err := condition.ParseJSONPathMulti(moved.Path)
+	if err != nil {
+		return nil
+	}
+	to.expr, to.isMulti, to.baseExpr = expr, isMulti, condition.ExtractBasePath(expr)
+	return to
 }
