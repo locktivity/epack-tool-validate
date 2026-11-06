@@ -329,7 +329,9 @@ func (l *linter) checkCondition(req *raw.RawRequirement, schema *evidenceschema.
 		}
 		return
 	}
-	if block, ok := movedBlockIn(typ, cond.Path); ok {
+	if moved, ok := l.registry.MovedField(typ, cond.Path); ok && moved.Same && moved.Path != "" {
+		at(SeverityWarning, CodeMovedPath, sameValuePath(typ, cond.Path, moved))
+	} else if block, ok := movedBlockIn(typ, cond.Path); ok {
 		if message, ok := movedPath(typ, cond.Path, block, true); ok {
 			at(SeverityWarning, CodeMovedPath, message)
 		}

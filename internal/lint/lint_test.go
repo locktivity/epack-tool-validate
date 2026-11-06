@@ -522,7 +522,9 @@ func TestRun_MovedFieldWarnsWithItsNewField(t *testing.T) {
 		{"scanner coverage", "evidencepack/vcs-posture@v1", "$.security_features.code_scanning_pct",
 			[]string{"coverage_pct", "evidencepack/vuln-scanning@v1"}},
 		{"two-factor", "evidencepack/vcs-posture@v1", "$.org_security.two_factor_required",
-			[]string{"sign_in.mfa_required"}},
+			[]string{"$.sign_in.mfa_required in evidencepack/access-posture@v1 from the same collector run", "needs no change", "same shape in every system"}},
+		{"a renamed field", "evidencepack/cloud-posture@v1", "$.accounts[*].logging.cloudtrail_enabled",
+			[]string{"$.accounts[*].logging.audit_log_enabled in evidencepack/cloud-posture@v1", "needs no change"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

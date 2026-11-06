@@ -4,6 +4,7 @@ package validator
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/locktivity/epack/componentsdk"
@@ -69,4 +70,35 @@ func BuildPackIndex(pack *componentsdk.Pack) (*PackIndex, error) {
 	}
 
 	return index, nil
+}
+
+// Sibling returns the artifact of schema that the collector run behind a
+// wrote, if the pack has one. A run writes each artifact at
+// artifacts/<run>.<kind>.json, so two artifacts share a run when they share
+// that name. An artifact at any other path has no siblings.
+func (p *PackIndex) Sibling(a IndexedArtifact, schema string) (IndexedArtifact, bool) {
+	run := runOf(a.Path, a.Schema)
+	if p == nil || run == "" {
+		return IndexedArtifact{}, false
+	}
+	for _, candidate := range p.BySchema[schema] {
+		if runOf(candidate.Path, candidate.Schema) == run {
+			return candidate, true
+		}
+	}
+	return IndexedArtifact{}, false
+}
+
+// runOf returns the run name in artifacts/<run>.<kind>.json, or "" for a
+// path of another shape.
+func runOf(path, schema string) string {
+	name, ok := strings.CutPrefix(path, "artifacts/")
+	if !ok {
+		return ""
+	}
+	name, ok = strings.CutSuffix(name, "."+componentsdk.KindOf(schema)+".json")
+	if !ok || name == "" || strings.Contains(name, "/") {
+		return ""
+	}
+	return name
 }

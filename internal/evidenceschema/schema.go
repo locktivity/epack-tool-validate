@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/locktivity/epack/componentsdk"
 )
@@ -34,6 +35,9 @@ type Schema struct {
 	Type   string
 	Source string
 	root   map[string]any
+
+	movedOnce sync.Once
+	moved     map[string]Moved // Each deprecated field by its canonical path
 }
 
 // Registry maps artifact types to their schemas.
