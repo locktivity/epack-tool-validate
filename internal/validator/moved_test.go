@@ -98,3 +98,45 @@ func TestValidate_MovedFields(t *testing.T) {
 		})
 	}
 }
+
+// Two tests on one moved field with different criteria each keep their own
+// once the old field is gone, even though they share its replacement.
+func TestValidate_MovedFieldsKeepEachTestsCriteria(t *testing.T) {
+	profile := compileProfile(t, `id: moved-criteria
+name: Moved criteria
+version: "1.0.0"
+requirements:
+  - id: VCS-001
+    name: Code host requires two-factor sign-in
+    satisfied_by:
+      any_of:
+        - type: evidencepack/vcs-posture@v1
+          metadata_conditions:
+            all:
+              - path: $.org_security.two_factor_required
+                op: eq
+                value: true
+        - type: evidencepack/vcs-posture@v1
+          severity: critical
+          metadata_conditions:
+            all:
+              - path: $.org_security.two_factor_required
+                op: eq
+                value: false
+`)
+	pack := func(required bool) *PackIndex {
+		return packOf(
+			artifactOf("artifacts/github.vcs-posture.json", "evidencepack/vcs-posture@v1", map[string]any{"repository_count": 3.0}),
+			artifactOf("artifacts/github.access-posture.json", "evidencepack/access-posture@v1", map[string]any{"sign_in": map[string]any{"mfa_required": required}}),
+		)
+	}
+	now := TestContext(time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC))
+
+	if got := New().Validate(now, profile, pack(true), "sha256:test").Requirements[0]; got.Status != "pass" {
+		t.Errorf("required: status %q, want pass", got.Status)
+	}
+	got := New().Validate(now, profile, pack(false), "sha256:test").Requirements[0]
+	if got.Status != "fail" || got.Severity != "critical" {
+		t.Errorf("not required: status %q at %q, want fail at critical", got.Status, got.Severity)
+	}
+}
